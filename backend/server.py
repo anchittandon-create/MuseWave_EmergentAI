@@ -234,6 +234,9 @@ async def ai_suggest(request: AISuggestRequest):
 
 @api_router.post("/songs/create")
 async def create_song(song_data: SongCreate):
+    if not song_data.music_prompt or not song_data.music_prompt.strip():
+        raise HTTPException(status_code=422, detail="Music prompt is required")
+    
     # Simulate music generation (mocked)
     song = Song(
         title=song_data.title or f"Untitled Track {random.randint(1000, 9999)}",
