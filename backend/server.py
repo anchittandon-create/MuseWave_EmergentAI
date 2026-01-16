@@ -287,6 +287,9 @@ async def get_user_songs(user_id: str):
 
 @api_router.post("/albums/create")
 async def create_album(album_data: AlbumCreate):
+    if not album_data.music_prompt or not album_data.music_prompt.strip():
+        raise HTTPException(status_code=422, detail="Music prompt is required")
+    
     album = Album(
         title=album_data.title or f"Untitled Album {random.randint(1000, 9999)}",
         music_prompt=album_data.music_prompt,
