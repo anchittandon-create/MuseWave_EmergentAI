@@ -380,7 +380,7 @@ async def generate_music_with_replicate(
     try:
         # Use Replicate's MusicGen model
         output = replicate.run(
-            "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055f2a67f6cd8ced5b0b5a0b4",
+            "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
             input={
                 "prompt": full_prompt,
                 "duration": music_duration,
