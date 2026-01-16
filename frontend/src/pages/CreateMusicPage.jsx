@@ -6,7 +6,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Slider } from "../components/ui/slider";
 import { Switch } from "../components/ui/switch";
 import { Badge } from "../components/ui/badge";
-import { Sparkles, Music, Disc, Play, Pause, Download, X, Loader2 } from "lucide-react";
+import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Wand2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
 import { API } from "../App";
@@ -14,18 +14,24 @@ import { API } from "../App";
 export default function CreateMusicPage({ user }) {
   const [mode, setMode] = useState("single");
   const [loading, setLoading] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState("");
   const [suggestingField, setSuggestingField] = useState(null);
   const [genres, setGenres] = useState([]);
+  const [genreCategories, setGenreCategories] = useState({});
   const [languages, setLanguages] = useState([]);
+  const [artists, setArtists] = useState([]);
+  const [videoStyles, setVideoStyles] = useState([]);
   const [result, setResult] = useState(null);
   const [playingTrack, setPlayingTrack] = useState(null);
   const [audioRef, setAudioRef] = useState(null);
+  const [genreSearch, setGenreSearch] = useState("");
+  const [artistSearch, setArtistSearch] = useState("");
 
   const [formData, setFormData] = useState({
     title: "",
     musicPrompt: "",
     selectedGenres: [],
-    durationSeconds: 180,
+    durationSeconds: 15,
     vocalLanguages: [],
     lyrics: "",
     artistInspiration: "",
@@ -35,19 +41,25 @@ export default function CreateMusicPage({ user }) {
   });
 
   useEffect(() => {
-    fetchOptions();
+    fetchKnowledgeBases();
   }, []);
 
-  const fetchOptions = async () => {
+  const fetchKnowledgeBases = async () => {
     try {
-      const [genresRes, langsRes] = await Promise.all([
+      const [genresRes, langsRes, artistsRes, stylesRes] = await Promise.all([
         axios.get(`${API}/genres`),
         axios.get(`${API}/languages`),
+        axios.get(`${API}/artists`),
+        axios.get(`${API}/video-styles`),
       ]);
       setGenres(genresRes.data.genres);
+      setGenreCategories(genresRes.data.categories || {});
       setLanguages(langsRes.data.languages);
+      setArtists(artistsRes.data.artists || []);
+      setVideoStyles(stylesRes.data.styles || []);
     } catch (error) {
-      console.error("Failed to fetch options:", error);
+      console.error("Failed to fetch knowledge bases:", error);
+      toast.error("Failed to load music options");
     }
   };
 
@@ -66,14 +78,13 @@ export default function CreateMusicPage({ user }) {
 
   const handleDurationChange = (field, value) => {
     const newDuration = { ...duration, [field]: parseInt(value) || 0 };
-    setFormData({
-      ...formData,
-      durationSeconds: parseDuration(newDuration.h, newDuration.m, newDuration.s),
-    });
+    const newSeconds = parseDuration(newDuration.h, newDuration.m, newDuration.s);
+    // MusicGen limit is 30 seconds
+    setFormData({ ...formData, durationSeconds: Math.min(newSeconds, 30) });
   };
 
   const handleSliderChange = (value) => {
-    setFormData({ ...formData, durationSeconds: value[0] });
+    setFormData({ ...formData, durationSeconds: Math.min(value[0], 30) });
   };
 
   const toggleGenre = (genre) => {
@@ -90,52 +101,90 @@ export default function CreateMusicPage({ user }) {
     setFormData({ ...formData, vocalLanguages: selected });
   };
 
+  const filteredGenres = genreSearch
+    ? genres.filter((g) => g.toLowerCase().includes(genreSearch.toLowerCase()))
+    : genres;
+
+  const filteredArtists = artistSearch
+    ? artists.filter((a) => a.toLowerCase().includes(artistSearch.toLowerCase()))
+    : artists.slice(0, 20);
+
   const handleAISuggest = async (field) => {
     setSuggestingField(field);
     try {
       const response = await axios.post(`${API}/suggest`, {
         field,
-        current_value: formData[field === "genres" ? "selectedGenres" : field === "vocal_languages" ? "vocalLanguages" : field === "music_prompt" ? "musicPrompt" : field === "artist_inspiration" ? "artistInspiration" : field === "video_style" ? "videoStyle" : field] || "",
+        current_value: getFieldValue(field),
         context: {
           music_prompt: formData.musicPrompt,
           genres: formData.selectedGenres,
           lyrics: formData.lyrics,
+          artist_inspiration: formData.artistInspiration,
         },
       });
 
       const suggestion = response.data.suggestion;
-      
-      if (field === "genres") {
-        const suggestedGenres = suggestion.split(",").map((g) => g.trim());
-        const validGenres = suggestedGenres.filter((g) => genres.includes(g));
-        if (validGenres.length > 0) {
-          setFormData({ ...formData, selectedGenres: validGenres });
-          toast.success("Genres suggested!");
-        }
-      } else if (field === "vocal_languages") {
-        const suggestedLangs = suggestion.split(",").map((l) => l.trim());
-        const validLangs = suggestedLangs.filter((l) => languages.includes(l));
-        if (validLangs.length > 0) {
-          setFormData({ ...formData, vocalLanguages: validLangs });
-          toast.success("Languages suggested!");
-        } else if (suggestion.toLowerCase().includes("instrumental")) {
-          setFormData({ ...formData, vocalLanguages: ["Instrumental"] });
-          toast.success("Suggested: Instrumental");
-        }
-      } else {
-        const fieldMap = {
-          music_prompt: "musicPrompt",
-          artist_inspiration: "artistInspiration",
-          video_style: "videoStyle",
-        };
-        const key = fieldMap[field] || field;
-        setFormData({ ...formData, [key]: suggestion });
-        toast.success(`${field.replace("_", " ")} suggested!`);
-      }
+      applySuggestion(field, suggestion);
+      toast.success("AI suggestion applied!");
     } catch (error) {
-      toast.error("Failed to get suggestion");
+      toast.error(error.response?.data?.detail || "Failed to get suggestion");
     } finally {
       setSuggestingField(null);
+    }
+  };
+
+  const getFieldValue = (field) => {
+    const mapping = {
+      title: formData.title,
+      music_prompt: formData.musicPrompt,
+      genres: formData.selectedGenres.join(", "),
+      lyrics: formData.lyrics,
+      artist_inspiration: formData.artistInspiration,
+      video_style: formData.videoStyle,
+      vocal_languages: formData.vocalLanguages.join(", "),
+    };
+    return mapping[field] || "";
+  };
+
+  const applySuggestion = (field, suggestion) => {
+    switch (field) {
+      case "title":
+        setFormData({ ...formData, title: suggestion });
+        break;
+      case "music_prompt":
+        setFormData({ ...formData, musicPrompt: suggestion });
+        break;
+      case "genres":
+        const suggestedGenres = suggestion.split(",").map((g) => g.trim());
+        const validGenres = suggestedGenres.filter((g) => 
+          genres.some((kg) => kg.toLowerCase() === g.toLowerCase())
+        );
+        if (validGenres.length > 0) {
+          setFormData({ ...formData, selectedGenres: validGenres });
+        }
+        break;
+      case "lyrics":
+        setFormData({ ...formData, lyrics: suggestion });
+        break;
+      case "artist_inspiration":
+        setFormData({ ...formData, artistInspiration: suggestion });
+        break;
+      case "video_style":
+        setFormData({ ...formData, videoStyle: suggestion });
+        break;
+      case "vocal_languages":
+        const suggestedLangs = suggestion.split(",").map((l) => l.trim());
+        const validLangs = suggestedLangs.filter((l) =>
+          languages.some((kl) => kl.toLowerCase() === l.toLowerCase())
+        );
+        if (validLangs.length > 0) {
+          setFormData({ ...formData, vocalLanguages: validLangs });
+        } else if (suggestion.toLowerCase().includes("instrumental")) {
+          setFormData({ ...formData, vocalLanguages: ["Instrumental"] });
+        }
+        break;
+      default:
+        break;
     }
   };
 
@@ -146,8 +195,13 @@ export default function CreateMusicPage({ user }) {
     }
 
     setLoading(true);
+    setGenerationStatus("Initializing AI music generation...");
+    setResult(null);
+
     try {
       if (mode === "single") {
+        setGenerationStatus("Generating your unique track with AI... This may take 30-60 seconds.");
+        
         const response = await axios.post(`${API}/songs/create`, {
           title: formData.title,
           music_prompt: formData.musicPrompt,
@@ -161,9 +215,12 @@ export default function CreateMusicPage({ user }) {
           mode: "single",
           user_id: user.id,
         });
+        
         setResult({ type: "song", data: response.data });
-        toast.success("Song created successfully!");
+        toast.success("🎵 Your unique track has been created!");
       } else {
+        setGenerationStatus(`Generating ${formData.numSongs} unique tracks... This may take several minutes.`);
+        
         const response = await axios.post(`${API}/albums/create`, {
           title: formData.title,
           music_prompt: formData.musicPrompt,
@@ -176,13 +233,17 @@ export default function CreateMusicPage({ user }) {
           num_songs: formData.numSongs,
           user_id: user.id,
         });
+        
         setResult({ type: "album", data: response.data });
-        toast.success("Album created successfully!");
+        toast.success(`🎵 Album with ${response.data.songs?.length || 0} tracks created!`);
       }
     } catch (error) {
-      toast.error("Failed to create music");
+      const errorMsg = error.response?.data?.detail || "Music generation failed";
+      toast.error(errorMsg);
+      console.error("Generation error:", error);
     } finally {
       setLoading(false);
+      setGenerationStatus("");
     }
   };
 
@@ -208,7 +269,7 @@ export default function CreateMusicPage({ user }) {
       size="sm"
       className="text-primary hover:text-primary/80 h-8 px-2"
       onClick={() => handleAISuggest(field)}
-      disabled={suggestingField === field || disabled}
+      disabled={suggestingField === field || disabled || loading}
       data-testid={`suggest-${field}-btn`}
     >
       {suggestingField === field ? (
@@ -227,8 +288,22 @@ export default function CreateMusicPage({ user }) {
         <div className="mb-8">
           <h1 className="text-3xl font-bold tracking-tight mb-2">Create Music</h1>
           <p className="text-muted-foreground">
-            Describe your vision and let AI bring it to life
+            Real AI-powered music generation • Each creation is unique
           </p>
+        </div>
+
+        {/* Info Banner */}
+        <div className="mb-6 p-4 rounded-xl bg-primary/10 border border-primary/20">
+          <div className="flex items-start gap-3">
+            <Wand2 className="w-5 h-5 text-primary mt-0.5" />
+            <div>
+              <p className="text-sm font-medium">Real AI Generation</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Your music is generated using Meta's MusicGen AI. Each track is completely unique - 
+                no templates, no repetition. Generation takes 30-60 seconds per track.
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Mode Selection */}
@@ -245,7 +320,7 @@ export default function CreateMusicPage({ user }) {
           >
             <Music className={`w-8 h-8 mb-3 ${mode === "single" ? "text-primary" : "text-muted-foreground"}`} />
             <h3 className="font-semibold mb-1">Single Song</h3>
-            <p className="text-sm text-muted-foreground">Create one track</p>
+            <p className="text-sm text-muted-foreground">Create one unique track</p>
           </button>
           <button
             type="button"
@@ -259,7 +334,7 @@ export default function CreateMusicPage({ user }) {
           >
             <Disc className={`w-8 h-8 mb-3 ${mode === "album" ? "text-primary" : "text-muted-foreground"}`} />
             <h3 className="font-semibold mb-1">Album</h3>
-            <p className="text-sm text-muted-foreground">Create multiple tracks</p>
+            <p className="text-sm text-muted-foreground">Multiple tracks with variation</p>
           </button>
         </div>
 
@@ -272,13 +347,16 @@ export default function CreateMusicPage({ user }) {
                 <Label className="text-xs uppercase tracking-widest text-muted-foreground">
                   Number of Songs
                 </Label>
+                <span className="text-xs text-muted-foreground">
+                  Each track will have controlled variation
+                </span>
               </div>
               <Input
                 type="number"
                 min={2}
-                max={20}
+                max={10}
                 value={formData.numSongs}
-                onChange={(e) => setFormData({ ...formData, numSongs: parseInt(e.target.value) || 3 })}
+                onChange={(e) => setFormData({ ...formData, numSongs: Math.min(parseInt(e.target.value) || 3, 10) })}
                 className="mt-2 bg-transparent border-b border-white/20 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary w-24"
                 data-testid="num-songs-input"
               />
@@ -294,7 +372,7 @@ export default function CreateMusicPage({ user }) {
               <SuggestButton field="title" />
             </div>
             <Input
-              placeholder={mode === "single" ? "Enter track name (optional)" : "Enter album name (optional)"}
+              placeholder={mode === "single" ? "Enter track name or let AI suggest" : "Enter album name or let AI suggest"}
               value={formData.title}
               onChange={(e) => setFormData({ ...formData, title: e.target.value })}
               className="bg-transparent border-b border-white/20 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary h-12 text-lg"
@@ -302,16 +380,19 @@ export default function CreateMusicPage({ user }) {
             />
           </div>
 
-          {/* Music Prompt */}
+          {/* Music Prompt (PRIMARY) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label className="text-xs uppercase tracking-widest text-muted-foreground">
-                Music Description *
-              </Label>
+              <div>
+                <Label className="text-xs uppercase tracking-widest text-muted-foreground">
+                  Music Description *
+                </Label>
+                <span className="text-xs text-primary ml-2">Primary creative driver</span>
+              </div>
               <SuggestButton field="music_prompt" />
             </div>
             <Textarea
-              placeholder="Describe the mood, energy, atmosphere, imagery... Be as detailed as you like."
+              placeholder="Describe the mood, energy, atmosphere, sonic textures, instrumentation... Be as detailed and evocative as you like. This is the main input that shapes your music."
               value={formData.musicPrompt}
               onChange={(e) => setFormData({ ...formData, musicPrompt: e.target.value })}
               className="min-h-32 bg-transparent border border-white/10 rounded-xl focus-visible:ring-0 focus-visible:border-primary resize-none"
@@ -319,7 +400,7 @@ export default function CreateMusicPage({ user }) {
             />
           </div>
 
-          {/* Genres */}
+          {/* Genres with Search */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <Label className="text-xs uppercase tracking-widest text-muted-foreground">
@@ -327,8 +408,15 @@ export default function CreateMusicPage({ user }) {
               </Label>
               <SuggestButton field="genres" />
             </div>
-            <div className="flex flex-wrap gap-2" data-testid="genres-selection">
-              {genres.map((genre) => (
+            <Input
+              placeholder="Search genres..."
+              value={genreSearch}
+              onChange={(e) => setGenreSearch(e.target.value)}
+              className="bg-secondary/50 border-0 h-10 mb-3"
+              data-testid="genre-search"
+            />
+            <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-2" data-testid="genres-selection">
+              {filteredGenres.map((genre) => (
                 <Badge
                   key={genre}
                   variant={formData.selectedGenres.includes(genre) ? "default" : "outline"}
@@ -338,26 +426,34 @@ export default function CreateMusicPage({ user }) {
                       : "hover:bg-white/5"
                   }`}
                   onClick={() => toggleGenre(genre)}
-                  data-testid={`genre-${genre.toLowerCase()}`}
+                  data-testid={`genre-${genre.toLowerCase().replace(/\s+/g, '-')}`}
                 >
                   {genre}
                 </Badge>
               ))}
             </div>
+            {formData.selectedGenres.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Selected: {formData.selectedGenres.join(", ")}
+              </p>
+            )}
           </div>
 
           {/* Duration - Only for single mode */}
           {mode === "single" && (
             <div className="space-y-4">
-              <Label className="text-xs uppercase tracking-widest text-muted-foreground">
-                Duration
-              </Label>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs uppercase tracking-widest text-muted-foreground">
+                  Duration
+                </Label>
+                <span className="text-xs text-muted-foreground">Max 30 seconds (AI model limit)</span>
+              </div>
               <div className="space-y-6">
                 <Slider
                   value={[formData.durationSeconds]}
                   onValueChange={handleSliderChange}
-                  max={600}
-                  min={30}
+                  max={30}
+                  min={5}
                   step={1}
                   className="w-full"
                   data-testid="duration-slider"
@@ -367,7 +463,7 @@ export default function CreateMusicPage({ user }) {
                     <Input
                       type="number"
                       min={0}
-                      max={9}
+                      max={0}
                       value={duration.h}
                       onChange={(e) => handleDurationChange("h", e.target.value)}
                       className="w-16 text-center bg-secondary border-0"
@@ -380,7 +476,7 @@ export default function CreateMusicPage({ user }) {
                     <Input
                       type="number"
                       min={0}
-                      max={59}
+                      max={0}
                       value={duration.m}
                       onChange={(e) => handleDurationChange("m", e.target.value)}
                       className="w-16 text-center bg-secondary border-0"
@@ -392,8 +488,8 @@ export default function CreateMusicPage({ user }) {
                   <div className="flex items-center gap-2">
                     <Input
                       type="number"
-                      min={0}
-                      max={59}
+                      min={5}
+                      max={30}
                       value={duration.s}
                       onChange={(e) => handleDurationChange("s", e.target.value)}
                       className="w-16 text-center bg-secondary border-0"
@@ -425,7 +521,7 @@ export default function CreateMusicPage({ user }) {
                       : "hover:bg-white/5"
                   }`}
                   onClick={() => toggleLanguage(lang)}
-                  data-testid={`lang-${lang.toLowerCase()}`}
+                  data-testid={`lang-${lang.toLowerCase().replace(/\s+/g, '-')}`}
                 >
                   {lang}
                 </Badge>
@@ -442,7 +538,7 @@ export default function CreateMusicPage({ user }) {
               <SuggestButton field="lyrics" />
             </div>
             <Textarea
-              placeholder="Enter themes, stories, or full lyrics..."
+              placeholder="Enter themes, stories, concepts, or actual lyrics. This guides the vocal direction and emotional tone..."
               value={formData.lyrics}
               onChange={(e) => setFormData({ ...formData, lyrics: e.target.value })}
               className="min-h-32 bg-transparent border border-white/10 rounded-xl focus-visible:ring-0 focus-visible:border-primary resize-none"
@@ -450,7 +546,7 @@ export default function CreateMusicPage({ user }) {
             />
           </div>
 
-          {/* Artist Inspiration */}
+          {/* Artist Inspiration with Search */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-xs uppercase tracking-widest text-muted-foreground">
@@ -459,12 +555,30 @@ export default function CreateMusicPage({ user }) {
               <SuggestButton field="artist_inspiration" />
             </div>
             <Input
-              placeholder="e.g., Tame Impala, The Weeknd, M83"
+              placeholder="Search artists or type freely..."
               value={formData.artistInspiration}
               onChange={(e) => setFormData({ ...formData, artistInspiration: e.target.value })}
               className="bg-transparent border-b border-white/20 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary h-12"
               data-testid="artist-inspiration-input"
             />
+            {formData.artistInspiration.length < 3 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {artists.slice(0, 12).map((artist) => (
+                  <Badge
+                    key={artist}
+                    variant="outline"
+                    className="cursor-pointer hover:bg-white/5 text-xs"
+                    onClick={() => {
+                      const current = formData.artistInspiration;
+                      const newVal = current ? `${current}, ${artist}` : artist;
+                      setFormData({ ...formData, artistInspiration: newVal });
+                    }}
+                  >
+                    {artist}
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Video Toggle */}
@@ -472,7 +586,7 @@ export default function CreateMusicPage({ user }) {
             <div>
               <Label className="text-sm font-medium">Generate Video</Label>
               <p className="text-xs text-muted-foreground mt-1">
-                Create a music video for your track
+                Create a music video using Sora 2 AI (adds ~2 min generation time)
               </p>
             </div>
             <Switch
@@ -492,12 +606,24 @@ export default function CreateMusicPage({ user }) {
                 <SuggestButton field="video_style" />
               </div>
               <Input
-                placeholder="e.g., Cyberpunk cityscape, Abstract visualizer, Nature scenes"
+                placeholder="Describe the visual style..."
                 value={formData.videoStyle}
                 onChange={(e) => setFormData({ ...formData, videoStyle: e.target.value })}
                 className="bg-transparent border-b border-white/20 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary h-12"
                 data-testid="video-style-input"
               />
+              <div className="flex flex-wrap gap-2 mt-2">
+                {videoStyles.slice(0, 8).map((style) => (
+                  <Badge
+                    key={style}
+                    variant="outline"
+                    className="cursor-pointer hover:bg-white/5 text-xs"
+                    onClick={() => setFormData({ ...formData, videoStyle: style })}
+                  >
+                    {style}
+                  </Badge>
+                ))}
+              </div>
             </div>
           )}
 
@@ -512,7 +638,9 @@ export default function CreateMusicPage({ user }) {
             {loading ? (
               <span className="flex items-center gap-2">
                 <Loader2 className="w-5 h-5 animate-spin" />
-                {mode === "single" ? "Creating Song..." : "Creating Album..."}
+                <span className="flex flex-col items-start">
+                  <span>{mode === "single" ? "Generating..." : "Creating Album..."}</span>
+                </span>
               </span>
             ) : (
               <span className="flex items-center gap-2">
@@ -521,6 +649,16 @@ export default function CreateMusicPage({ user }) {
               </span>
             )}
           </Button>
+
+          {/* Generation Status */}
+          {loading && generationStatus && (
+            <div className="p-4 rounded-xl bg-secondary/50 border border-white/10 animate-pulse">
+              <div className="flex items-center gap-3">
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                <span className="text-sm">{generationStatus}</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Result Section */}
@@ -614,14 +752,26 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
         </p>
       </div>
 
-      <a
-        href={track.audio_url}
-        download
-        className="p-2 rounded-lg hover:bg-white/5 transition-colors"
-        data-testid={`download-btn-${track.id}`}
-      >
-        <Download className="w-5 h-5 text-muted-foreground hover:text-foreground" />
-      </a>
+      <div className="flex items-center gap-2">
+        {track.video_url && (
+          <a
+            href={track.video_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-2 rounded-lg hover:bg-white/5 transition-colors text-xs text-primary"
+          >
+            Video
+          </a>
+        )}
+        <a
+          href={track.audio_url}
+          download
+          className="p-2 rounded-lg hover:bg-white/5 transition-colors"
+          data-testid={`download-btn-${track.id}`}
+        >
+          <Download className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+        </a>
+      </div>
     </div>
   );
 };
