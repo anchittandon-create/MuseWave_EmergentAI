@@ -1,0 +1,141 @@
+{
+  "identity": {
+    "persona": "E1 - The Anti-AI Designer",
+    "archetype": "The Performance Pro + Electric Future",
+    "vibe": "Immersive, Precision-Engineered, Dark-Matter",
+    "principles": [
+      "Fusion over Imitation: Mix DAW precision with Spotify fluidity",
+      "Emotion First: The interface should feel like an instrument, not a form",
+      "Content is King: The music (waveform/album art) is the hero",
+      "Contrast: Deepest blacks vs. Electric accents"
+    ]
+  },
+  "typography": {
+    "primary": {
+      "name": "Manrope",
+      "usage": "UI Elements, Body, Labels",
+      "weights": ["400", "500", "600", "700"]
+    },
+    "display": {
+      "name": "Clash Display",
+      "usage": "Headings, Hero Sections, Marketing",
+      "weights": ["500", "600"]
+    },
+    "mono": {
+      "name": "JetBrains Mono",
+      "usage": "Timecodes, Duration, Technical Data, Genre Tags",
+      "weights": ["400"]
+    },
+    "rules": [
+      "Headings > 32px must use tracking-tight",
+      "Labels must be Uppercase + tracking-widest + text-xs",
+      "Never use Inter for headings"
+    ]
+  },
+  "colors": {
+    "theme": "dark",
+    "palette": {
+      "background": "#050505",
+      "foreground": "#FFFFFF",
+      "card": "#0A0A0A",
+      "card_foreground": "#FFFFFF",
+      "popover": "#0A0A0A",
+      "popover_foreground": "#FFFFFF",
+      "primary": "#D4FF00",
+      "primary_foreground": "#000000",
+      "secondary": "#1A1A1A",
+      "secondary_foreground": "#FFFFFF",
+      "muted": "#1A1A1A",
+      "muted_foreground": "#A1A1AA",
+      "accent": "#262626",
+      "accent_foreground": "#FFFFFF",
+      "destructive": "#FF3B30",
+      "destructive_foreground": "#FFFFFF",
+      "border": "#262626",
+      "input": "#262626",
+      "ring": "#D4FF00"
+    },
+    "gradients": {
+      "hero_glow": "radial-gradient(circle at center, rgba(212, 255, 0, 0.15) 0%, rgba(0, 0, 0, 0) 70%)",
+      "active_border": "linear-gradient(90deg, transparent, #D4FF00, transparent)"
+    },
+    "rules": [
+      "Never use pure black (#000000) for cards, use #0A0A0A",
+      "Primary color (#D4FF00) is for 'Play', 'Generate', and 'Call to Action' ONLY",
+      "Borders should be subtle (opacity 10-20%)"
+    ]
+  },
+  "layout": {
+    "spacing_scale": ["p-1", "p-2", "p-4", "p-6", "p-8", "p-12", "p-16", "p-24", "p-32"],
+    "grid_system": {
+      "dashboard": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+      "marketing": "grid-cols-1 md:grid-cols-12 gap-8"
+    },
+    "sidebar": {
+      "width": "w-64",
+      "behavior": "Fixed left, persistent",
+      "style": "Border-r border-white/10 bg-background/95 backdrop-blur-xl"
+    },
+    "container": {
+      "max_width": "max-w-7xl",
+      "padding": "px-6 md:px-12"
+    }
+  },
+  "components": {
+    "buttons": {
+      "default": "rounded-md font-medium transition-all active:scale-95",
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_20px_rgba(212,255,0,0.3)]",
+      "ghost": "hover:bg-white/5 hover:text-white"
+    },
+    "inputs": {
+      "style": "bg-transparent border-b border-white/20 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary transition-colors",
+      "label_position": "top"
+    },
+    "cards": {
+      "style": "bg-card border border-white/5 rounded-xl hover:border-white/10 transition-colors",
+      "hover_effect": "group-hover:shadow-2xl group-hover:shadow-primary/5"
+    },
+    "slider": {
+      "style": "h-2 bg-secondary rounded-full",
+      "thumb": "h-5 w-5 bg-primary border-2 border-background ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+    },
+    "navigation": {
+      "item": "flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors",
+      "active": "bg-white/10 text-foreground"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-xl bg-black/40 border border-white/10",
+    "noise_texture": "url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMDUiLz4KPC9zdmc+')",
+    "glow_effects": "shadow-[0_0_30px_-5px_rgba(212,255,0,0.3)]"
+  },
+  "images": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1759771963975-8a4885446f1f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmUlMjBkYXJrJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3Njg1NjYzODR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Abstract neon sound wave",
+      "usage": "Home page hero background with overlay"
+    },
+    "studio_vibe": {
+      "url": "https://images.unsplash.com/photo-1601389926382-bcf545a238ab?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHxtdXNpYyUyMHByb2R1Y2VyJTIwcmVjb3JkaW5nJTIwc3R1ZGlvJTIwZGFyayUyMGFlc3RoZXRpY3xlbnwwfHx8fDE3Njg2MDE3MDF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Music producer in dark studio",
+      "usage": "Features section or 'How it works'"
+    },
+    "album_placeholders": [
+      "https://images.unsplash.com/photo-1645919268997-e8f6d5ee81e6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGFsYnVtJTIwYXJ0JTIwY3JlYXRpdmV8ZW58MHx8fHwxNzY4NjAxNzA0fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1645919268978-35253dfb1d75?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGFsYnVtJTIwYXJ0JTIwY3JlYXRpdmV8ZW58MHx8fHwxNzY4NjAxNzA0fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1765445665997-6553bd993ff1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMGFsYnVtJTIwYXJ0JTIwY3JlYXRpdmV8ZW58MHx8fHwxNzY4NjAxNzA0fDA&ixlib=rb-4.1.0&q=85"
+    ]
+  },
+  "universal_guidelines": [
+    "Do not use gradients for backgrounds, use solid dark colors with subtle noise",
+    "Use 2-3x more spacing than typical designs",
+    "Every interaction needs micro-animations",
+    "All interactive elements MUST include data-testid attribute",
+    "Use sonner for toasts",
+    "Components MUST use named exports",
+    "Pages MUST use default exports",
+    "Do not use generic AI emojis",
+    "Dark mode is mandatory and permanent"
+  ],
+  "instructions_to_main_agent": "You are building a professional creative tool. Think 'Logic Pro' meets 'Spotify'. The user is a creator, not a consumer. Give them control, precision, and a dark, immersive environment. Use the provided image URLs for the respective sections. Implement the sidebar navigation as a persistent layout element. Use the 'Manrope' font for UI and 'JetBrains Mono' for any data/time displays."
+}
