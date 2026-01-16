@@ -353,21 +353,49 @@ async def create_album(album_data: AlbumCreate):
 async def get_user_albums(user_id: str):
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
     
-    # Get songs for each album
-    for album in albums:
-        songs = await db.songs.find({"album_id": album['id']}, {"_id": 0}).to_list(50)
-        album['songs'] = songs
+    # Batch fetch all songs for user's albums (avoid N+1)
+    album_ids = [album['id'] for album in albums]
+    if album_ids:
+        all_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
+        # Group songs by album_id
+        songs_by_album = {}
+        for song in all_songs:
+            aid = song.get('album_id')
+            if aid not in songs_by_album:
+                songs_by_album[aid] = []
+            songs_by_album[aid].append(song)
+        # Assign songs to albums
+        for album in albums:
+            album['songs'] = songs_by_album.get(album['id'], [])
+    else:
+        for album in albums:
+            album['songs'] = []
     
     return albums
 
 @api_router.get("/dashboard/{user_id}")
 async def get_dashboard(user_id: str):
+    # Fetch standalone songs and albums in parallel concept, but batch songs
     songs = await db.songs.find({"user_id": user_id, "album_id": None}, {"_id": 0}).to_list(100)
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
     
-    for album in albums:
-        album_songs = await db.songs.find({"album_id": album['id']}, {"_id": 0}).to_list(50)
-        album['songs'] = album_songs
+    # Batch fetch all album songs (avoid N+1)
+    album_ids = [album['id'] for album in albums]
+    if album_ids:
+        all_album_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
+        # Group songs by album_id
+        songs_by_album = {}
+        for song in all_album_songs:
+            aid = song.get('album_id')
+            if aid not in songs_by_album:
+                songs_by_album[aid] = []
+            songs_by_album[aid].append(song)
+        # Assign songs to albums
+        for album in albums:
+            album['songs'] = songs_by_album.get(album['id'], [])
+    else:
+        for album in albums:
+            album['songs'] = []
     
     return {"songs": songs, "albums": albums}
 
@@ -402,11 +430,16 @@ async def root():
     return {"message": "Muzify API is running"}
 
 @api_router.get("/health")
-async def health():
+async def api_health():
     return {"status": "healthy"}
 
 # Include the router in the main app
 app.include_router(api_router)
+
+# Root-level health check for Kubernetes (without /api prefix)
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
 app.add_middleware(
     CORSMiddleware,
