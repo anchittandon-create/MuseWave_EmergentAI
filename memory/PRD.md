@@ -1,62 +1,50 @@
-# Muzify - AI Music Creation Application
+# Muzify - AI Music Creation Application (v2.0)
 
 ## Original Problem Statement
-AI-assisted music creation web application where users can:
-- Sign up/Login with mobile number (no password)
-- Create single songs or albums with AI assistance
-- Input: Title, Music Prompt, Genres, Duration, Vocal Languages, Lyrics, Artist Inspiration, Video toggle
-- AI Suggest buttons for each field (using OpenAI GPT-5.2)
-- Dashboard to view all creations with filtering
+AI-assisted music creation web application with REAL generative AI capabilities:
+- Every generation is UNIQUE (no templates, no repetition)
+- AI suggestions use GPT-5.2 with controlled randomness
+- Music generation uses Replicate MusicGen (real audio)
+- Video generation uses Sora 2 (real video)
+- Global knowledge bases for genres, artists, languages
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB
+- **Backend**: FastAPI + MongoDB + Replicate API + Emergent LLM
 - **Frontend**: React + Tailwind CSS + Shadcn UI
-- **AI Integration**: OpenAI GPT-5.2 via emergentintegrations library
-- **Audio/Video**: MOCKED (returns sample URLs)
+- **AI Stack**:
+  - OpenAI GPT-5.2 (via Emergent) for AI suggestions
+  - Replicate MusicGen for real audio generation
+  - Sora 2 (via Emergent) for video generation
 
-## User Personas
-1. **Musicians** - Want to quickly prototype song ideas
-2. **Content Creators** - Need royalty-free music for videos
-3. **Hobbyists** - Want to create music without instruments
-
-## Core Requirements (Static)
-- [x] Mobile-based authentication (no password)
+## Core Requirements (Implemented)
+- [x] Mobile-based authentication
 - [x] Single Song and Album creation modes
-- [x] AI-powered suggestions for all input fields
-- [x] Duration slider with HH:MM:SS sync
-- [x] Genre and language multi-select
-- [x] Video generation toggle
+- [x] AI-powered suggestions (unique per request)
+- [x] REAL music generation (Replicate MusicGen)
+- [x] Video generation option (Sora 2)
+- [x] Duration slider with HH:MM:SS sync (max 30s - MusicGen limit)
+- [x] Comprehensive knowledge bases (99 genres, 29 languages, artists)
 - [x] Dashboard with songs/albums filtering
+- [x] Dark professional theme
 
 ## What's Been Implemented (January 16, 2025)
-- Full authentication flow (signup/login with mobile)
-- Home page with hero section and "How it Works"
-- Create Music page with all input fields
-- AI Suggest buttons using OpenAI GPT-5.2
-- Song and Album creation (audio MOCKED)
-- Dashboard with filtering (All/Songs/Albums)
-- Audio playback and download functionality
-- Dark professional theme (Obsidian & Volt)
+- Full authentication flow
+- Home page with product explanation
+- Create Music page with all input fields and AI Suggest
+- **REAL** music generation via Replicate MusicGen API
+- **REAL** video generation via Sora 2
+- Dashboard with filtering
+- Comprehensive genre/artist/language knowledge bases
+- Uniqueness seeds for non-deterministic AI outputs
 
-## Prioritized Backlog
-
-### P0 (Critical - Next)
-- [ ] Real audio generation integration (e.g., Suno AI, MusicGen)
-- [ ] Real video generation integration
-
-### P1 (High Priority)
-- [ ] Edit/delete songs and albums
-- [ ] Share functionality (public links)
-- [ ] User profile page
-
-### P2 (Nice to Have)
-- [ ] Collaborative creation
-- [ ] Playlists
-- [ ] Social features (likes, comments)
-- [ ] Export to streaming platforms
+## Technical Notes
+- MusicGen has 30-second limit per generation
+- AI suggestions include uniqueness seeds (timestamp + random + UUID)
+- Video generation is optional and non-blocking
+- Album tracks have controlled variation for coherence
 
 ## Next Tasks
-1. Integrate real music generation API (Suno AI recommended)
-2. Add real video generation
-3. Implement edit/delete functionality
-4. Add sharing capabilities
+1. Add longer track support (extend audio beyond 30s)
+2. Add track editing/regeneration
+3. Implement sharing capabilities
+4. Add user profile page
