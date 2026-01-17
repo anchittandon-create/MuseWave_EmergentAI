@@ -457,6 +457,8 @@ async def create_song(song_data: SongCreate):
     
     await db.songs.insert_one(song_doc)
     
+    # Remove MongoDB _id field for JSON serialization
+    song_doc.pop('_id', None)
     return song_doc
 
 # ==================== Album Creation ====================
