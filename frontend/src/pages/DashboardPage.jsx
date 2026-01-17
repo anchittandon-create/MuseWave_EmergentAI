@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "../components/ui/button";
-import { Music, Disc, Play, Pause, Download, Filter } from "lucide-react";
+import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock } from "lucide-react";
 import axios from "axios";
 import { API } from "../App";
 
@@ -28,9 +28,7 @@ export default function DashboardPage({ user }) {
   };
 
   const playTrack = useCallback((trackUrl, trackId) => {
-    if (audioRef) {
-      audioRef.pause();
-    }
+    if (audioRef) audioRef.pause();
     if (playingTrack === trackId) {
       setPlayingTrack(null);
       return;
@@ -42,22 +40,15 @@ export default function DashboardPage({ user }) {
     setPlayingTrack(trackId);
   }, [audioRef, playingTrack]);
 
-  const formatTime = (seconds) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
-
-  const formatDate = (dateStr) => {
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  };
+  const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+  
+  const formatDate = (dateStr) => new Date(dateStr).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric"
+  });
 
   const totalSongs = data.songs.length;
   const totalAlbums = data.albums.length;
+  const totalTracks = totalSongs + data.albums.reduce((acc, a) => acc + (a.songs?.length || 0), 0);
 
   if (loading) {
     return (
@@ -71,44 +62,41 @@ export default function DashboardPage({ user }) {
   }
 
   return (
-    <div className="min-h-screen p-8" data-testid="dashboard-page">
+    <div className="min-h-screen p-6 lg:p-10" data-testid="dashboard-page">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold tracking-tight mb-2">Your Dashboard</h1>
-          <p className="text-muted-foreground">
-            All your created music in one place
-          </p>
+        <div className="mb-10">
+          <h1 className="font-display text-3xl lg:text-4xl font-bold tracking-tight mb-2">Your Dashboard</h1>
+          <p className="text-muted-foreground">All your created music in one place</p>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 gap-4 mb-8">
-          <div className="p-6 rounded-xl bg-card border border-white/5" data-testid="songs-stat">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                <Music className="w-6 h-6 text-primary" />
-              </div>
-              <div>
-                <p className="text-2xl font-bold">{totalSongs}</p>
-                <p className="text-sm text-muted-foreground">Standalone Songs</p>
+        <div className="grid grid-cols-3 gap-4 mb-10">
+          {[
+            { icon: Music, label: "Singles", value: totalSongs, color: "from-primary/20 to-primary/5" },
+            { icon: Disc, label: "Albums", value: totalAlbums, color: "from-blue-500/20 to-blue-500/5" },
+            { icon: Clock, label: "Total Tracks", value: totalTracks, color: "from-purple-500/20 to-purple-500/5" },
+          ].map((stat, i) => (
+            <div
+              key={i}
+              className="p-6 rounded-2xl glass card-hover"
+              data-testid={`${stat.label.toLowerCase()}-stat`}
+            >
+              <div className="flex items-center gap-4">
+                <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${stat.color} flex items-center justify-center`}>
+                  <stat.icon className="w-6 h-6 text-primary" />
+                </div>
+                <div>
+                  <p className="text-3xl font-bold font-display">{stat.value}</p>
+                  <p className="text-sm text-muted-foreground">{stat.label}</p>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="p-6 rounded-xl bg-card border border-white/5" data-testid="albums-stat">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                <Disc className="w-6 h-6 text-primary" />
-              </div>
-              <div>
-                <p className="text-2xl font-bold">{totalAlbums}</p>
-                <p className="text-sm text-muted-foreground">Albums</p>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
 
         {/* Filter */}
-        <div className="flex items-center gap-2 mb-6" data-testid="filter-section">
+        <div className="flex items-center gap-3 mb-8" data-testid="filter-section">
           <Filter className="w-4 h-4 text-muted-foreground" />
           <div className="flex gap-2">
             {["all", "songs", "albums"].map((f) => (
@@ -117,7 +105,7 @@ export default function DashboardPage({ user }) {
                 variant={filter === f ? "default" : "ghost"}
                 size="sm"
                 onClick={() => setFilter(f)}
-                className={filter === f ? "bg-primary text-primary-foreground" : ""}
+                className={`rounded-full ${filter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
                 data-testid={`filter-${f}`}
               >
                 {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -128,160 +116,147 @@ export default function DashboardPage({ user }) {
 
         {/* Empty State */}
         {totalSongs === 0 && totalAlbums === 0 && (
-          <div className="text-center py-16" data-testid="empty-state">
-            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center mx-auto mb-6">
-              <Music className="w-8 h-8 text-muted-foreground" />
+          <div className="text-center py-20" data-testid="empty-state">
+            <div className="w-20 h-20 rounded-2xl bg-secondary flex items-center justify-center mx-auto mb-6">
+              <Music className="w-10 h-10 text-muted-foreground" />
             </div>
-            <h3 className="text-xl font-semibold mb-2">No music yet</h3>
-            <p className="text-muted-foreground mb-6">
-              Create your first track to see it here
+            <h3 className="text-2xl font-semibold mb-3">No music yet</h3>
+            <p className="text-muted-foreground mb-8 max-w-md mx-auto">
+              Create your first track and it will appear here. Let's make some music!
             </p>
             <Button
               onClick={() => window.location.href = "/create"}
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              className="btn-primary glow-primary-sm rounded-full h-12 px-8"
               data-testid="create-first-btn"
             >
-              Create Music
+              <Music className="w-4 h-4 mr-2" />
+              Create Your First Track
             </Button>
           </div>
         )}
 
-        {/* Songs Section */}
+        {/* Songs */}
         {(filter === "all" || filter === "songs") && data.songs.length > 0 && (
           <div className="mb-12" data-testid="songs-section">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Music className="w-5 h-5 text-primary" />
-              Songs
+            <h2 className="text-xl font-semibold mb-6 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Music className="w-4 h-4 text-primary" />
+              </div>
+              Singles
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {data.songs.map((song) => (
                 <div
                   key={song.id}
-                  className="group p-4 rounded-xl bg-card border border-white/5 hover:border-white/10 transition-all"
+                  className="group rounded-2xl glass card-hover overflow-hidden"
                   data-testid={`song-card-${song.id}`}
                 >
-                  <div className="relative aspect-square mb-4 rounded-lg overflow-hidden">
-                    <img
-                      src={song.cover_art_url}
-                      alt={song.title}
-                      className="w-full h-full object-cover"
-                    />
+                  {/* Cover */}
+                  <div className="relative aspect-square">
+                    <img src={song.cover_art_url} alt={song.title} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
                     <button
                       onClick={() => playTrack(song.audio_url, song.id)}
-                      className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       data-testid={`play-song-${song.id}`}
                     >
-                      {playingTrack === song.id ? (
-                        <Pause className="w-12 h-12 text-white" />
-                      ) : (
-                        <Play className="w-12 h-12 text-white" />
-                      )}
+                      <div className="w-16 h-16 rounded-full bg-primary/90 flex items-center justify-center shadow-lg glow-primary">
+                        {playingTrack === song.id ? <Pause className="w-7 h-7 text-primary-foreground" /> : <Play className="w-7 h-7 text-primary-foreground ml-1" />}
+                      </div>
                     </button>
+                    {/* Duration badge */}
+                    <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-black/50 backdrop-blur text-xs font-mono">
+                      {formatTime(song.duration_seconds)}
+                    </div>
                   </div>
-                  <h3 className="font-semibold truncate mb-1">{song.title}</h3>
-                  <div className="flex items-center justify-between text-sm text-muted-foreground">
-                    <span className="font-mono">{formatTime(song.duration_seconds)}</span>
-                    <span>{formatDate(song.created_at)}</span>
+
+                  {/* Info */}
+                  <div className="p-5">
+                    <h3 className="font-semibold truncate mb-1">{song.title}</h3>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
+                      <Calendar className="w-3 h-3" />
+                      {formatDate(song.created_at)}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mb-4">
+                      {song.genres?.slice(0, 2).map((g) => (
+                        <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
+                      ))}
+                    </div>
+                    <a
+                      href={song.audio_url}
+                      download
+                      className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-secondary hover:bg-secondary/80 transition-colors text-sm font-medium"
+                      data-testid={`download-song-${song.id}`}
+                    >
+                      <Download className="w-4 h-4" />
+                      Download
+                    </a>
                   </div>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {song.genres?.slice(0, 3).map((genre) => (
-                      <span
-                        key={genre}
-                        className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground"
-                      >
-                        {genre}
-                      </span>
-                    ))}
-                  </div>
-                  <a
-                    href={song.audio_url}
-                    download
-                    className="mt-4 flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-secondary hover:bg-secondary/80 transition-colors text-sm"
-                    data-testid={`download-song-${song.id}`}
-                  >
-                    <Download className="w-4 h-4" />
-                    Download
-                  </a>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Albums Section */}
+        {/* Albums */}
         {(filter === "all" || filter === "albums") && data.albums.length > 0 && (
           <div data-testid="albums-section">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Disc className="w-5 h-5 text-primary" />
+            <h2 className="text-xl font-semibold mb-6 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                <Disc className="w-4 h-4 text-blue-500" />
+              </div>
               Albums
             </h2>
             <div className="space-y-4">
               {data.albums.map((album) => (
                 <div
                   key={album.id}
-                  className="rounded-xl bg-card border border-white/5 overflow-hidden"
+                  className="rounded-2xl glass overflow-hidden"
                   data-testid={`album-card-${album.id}`}
                 >
-                  {/* Album Header */}
+                  {/* Header */}
                   <button
                     onClick={() => setExpandedAlbum(expandedAlbum === album.id ? null : album.id)}
-                    className="w-full p-4 flex items-center gap-4 hover:bg-white/5 transition-colors"
+                    className="w-full p-5 flex items-center gap-5 hover:bg-white/[0.02] transition-colors"
                     data-testid={`expand-album-${album.id}`}
                   >
-                    <img
-                      src={album.cover_art_url}
-                      alt={album.title}
-                      className="w-20 h-20 rounded-lg object-cover"
-                    />
+                    <img src={album.cover_art_url} alt={album.title} className="w-20 h-20 rounded-xl object-cover shadow-lg" />
                     <div className="flex-1 text-left">
                       <h3 className="font-semibold text-lg">{album.title}</h3>
                       <p className="text-sm text-muted-foreground">
                         {album.songs?.length || 0} tracks • {formatDate(album.created_at)}
                       </p>
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {album.genres?.slice(0, 3).map((genre) => (
-                          <span
-                            key={genre}
-                            className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground"
-                          >
-                            {genre}
-                          </span>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {album.genres?.slice(0, 3).map((g) => (
+                          <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
                         ))}
                       </div>
                     </div>
-                    <div className="text-muted-foreground">
-                      {expandedAlbum === album.id ? "▲" : "▼"}
+                    <div className={`text-muted-foreground transition-transform ${expandedAlbum === album.id ? "rotate-180" : ""}`}>
+                      ▼
                     </div>
                   </button>
 
-                  {/* Album Tracks */}
+                  {/* Tracks */}
                   {expandedAlbum === album.id && (
                     <div className="border-t border-white/5 animate-fade-in" data-testid={`album-tracks-${album.id}`}>
-                      {album.songs?.map((track, index) => (
+                      {album.songs?.map((track, i) => (
                         <div
                           key={track.id}
-                          className="flex items-center gap-4 p-4 hover:bg-white/5 transition-colors border-b border-white/5 last:border-b-0"
+                          className="flex items-center gap-4 px-5 py-4 hover:bg-white/[0.02] transition-colors border-b border-white/5 last:border-b-0"
                         >
-                          <span className="w-8 text-center text-muted-foreground font-mono text-sm">
-                            {index + 1}
-                          </span>
+                          <span className="w-8 text-center text-muted-foreground font-mono text-sm">{i + 1}</span>
                           <button
                             onClick={() => playTrack(track.audio_url, track.id)}
                             className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center hover:bg-primary/20 transition-colors"
                             data-testid={`play-track-${track.id}`}
                           >
-                            {playingTrack === track.id ? (
-                              <Pause className="w-4 h-4" />
-                            ) : (
-                              <Play className="w-4 h-4" />
-                            )}
+                            {playingTrack === track.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                           </button>
                           <div className="flex-1 min-w-0">
                             <p className="font-medium truncate">{track.title}</p>
                           </div>
-                          <span className="text-sm text-muted-foreground font-mono">
-                            {formatTime(track.duration_seconds)}
-                          </span>
+                          <span className="text-sm text-muted-foreground font-mono">{formatTime(track.duration_seconds)}</span>
                           <a
                             href={track.audio_url}
                             download
