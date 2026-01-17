@@ -499,6 +499,8 @@ async def create_album(album_data: AlbumCreate):
     }
     
     await db.albums.insert_one(album_doc)
+    # Remove MongoDB _id field for JSON serialization
+    album_doc.pop('_id', None)
     
     # Generate tracks with variation
     songs = []
