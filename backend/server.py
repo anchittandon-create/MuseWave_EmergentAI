@@ -542,6 +542,8 @@ async def create_album(album_data: AlbumCreate):
         }
         
         await db.songs.insert_one(song_doc)
+        # Remove MongoDB _id field for JSON serialization
+        song_doc.pop('_id', None)
         songs.append({
             "id": song_doc["id"],
             "title": song_doc["title"],
