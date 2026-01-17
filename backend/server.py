@@ -44,57 +44,57 @@ app = FastAPI(title="Muzify API", description="AI Music Creation Platform")
 api_router = APIRouter(prefix="/api")
 
 # ==================== CURATED AUDIO LIBRARY ====================
-# High-quality royalty-free tracks organized by mood/genre
+# High-quality royalty-free tracks from reliable CDN sources
 
 AUDIO_LIBRARY = {
     "electronic": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3", "title": "Electronic Future", "duration": 30},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_8cb749d484.mp3", "title": "Synthwave Drive", "duration": 25},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/07/30/audio_e5b7a41da5.mp3", "title": "Digital Dreams", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/10/25/audio_946bc3eb5b.mp3", "title": "Cyber Pulse", "duration": 22},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", "title": "Electronic Pulse", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", "title": "Digital Wave", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", "title": "Synth Dreams", "duration": 25},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", "title": "Cyber Flow", "duration": 27},
     ],
     "ambient": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/02/22/audio_d1718ab41b.mp3", "title": "Peaceful Ambient", "duration": 30},
-        {"url": "https://cdn.pixabay.com/download/audio/2021/11/25/audio_91b32e02f9.mp3", "title": "Ethereal Space", "duration": 26},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/08/02/audio_884fe92c21.mp3", "title": "Calm Waters", "duration": 24},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3", "title": "Peaceful Ambient", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3", "title": "Ethereal Space", "duration": 26},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3", "title": "Calm Waters", "duration": 24},
     ],
     "rock": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/11/22/audio_a89df97458.mp3", "title": "Rock Energy", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/03/18/audio_69a3b0f31c.mp3", "title": "Guitar Riff", "duration": 25},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/04/27/audio_67bcb97489.mp3", "title": "Power Chords", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3", "title": "Rock Energy", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3", "title": "Guitar Riff", "duration": 25},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3", "title": "Power Chords", "duration": 30},
     ],
     "hip_hop": [
-        {"url": "https://cdn.pixabay.com/download/audio/2023/09/20/audio_82b1a60920.mp3", "title": "Urban Beat", "duration": 26},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/08/25/audio_4f3b0a8a67.mp3", "title": "Street Flow", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/05/16/audio_167152083e.mp3", "title": "Boom Bap", "duration": 24},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3", "title": "Urban Beat", "duration": 26},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3", "title": "Street Flow", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3", "title": "Boom Bap", "duration": 24},
     ],
     "cinematic": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/02/07/audio_b9bd4170e4.mp3", "title": "Epic Journey", "duration": 30},
-        {"url": "https://cdn.pixabay.com/download/audio/2021/08/04/audio_12b0c7443c.mp3", "title": "Dramatic Score", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/05/16/audio_5717667e89.mp3", "title": "Orchestral Rise", "duration": 25},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-14.mp3", "title": "Epic Journey", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-15.mp3", "title": "Dramatic Score", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-16.mp3", "title": "Orchestral Rise", "duration": 25},
     ],
     "jazz": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/08/31/audio_419263a59b.mp3", "title": "Smooth Jazz", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/01/16/audio_5a40d34a40.mp3", "title": "Jazz Cafe", "duration": 26},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", "title": "Smooth Jazz", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", "title": "Jazz Cafe", "duration": 26},
     ],
     "pop": [
-        {"url": "https://cdn.pixabay.com/download/audio/2023/10/19/audio_c3b4f85d7e.mp3", "title": "Pop Vibes", "duration": 25},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/10/18/audio_2146216cc7.mp3", "title": "Feel Good", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/04/19/audio_8c4a16a6b1.mp3", "title": "Summer Hit", "duration": 24},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", "title": "Pop Vibes", "duration": 25},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", "title": "Feel Good", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3", "title": "Summer Hit", "duration": 24},
     ],
     "lofi": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/05/17/audio_69a61cd6d6.mp3", "title": "Lofi Study", "duration": 30},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/11/16/audio_7e3c4b39ca.mp3", "title": "Chill Beats", "duration": 26},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/02/15/audio_8dca2c54bc.mp3", "title": "Rainy Day", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3", "title": "Lofi Study", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3", "title": "Chill Beats", "duration": 26},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3", "title": "Rainy Day", "duration": 28},
     ],
     "classical": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/01/20/audio_d0c6ff1bcd.mp3", "title": "Piano Sonata", "duration": 30},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/09/06/audio_47fa8af5f4.mp3", "title": "Strings Ensemble", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3", "title": "Piano Sonata", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3", "title": "Strings Ensemble", "duration": 28},
     ],
     "default": [
-        {"url": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a73467.mp3", "title": "Inspiring", "duration": 28},
-        {"url": "https://cdn.pixabay.com/download/audio/2022/08/04/audio_2dde668d05.mp3", "title": "Uplifting", "duration": 25},
-        {"url": "https://cdn.pixabay.com/download/audio/2023/06/21/audio_3d955ac6af.mp3", "title": "Creative Flow", "duration": 30},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3", "title": "Inspiring", "duration": 28},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3", "title": "Uplifting", "duration": 25},
+        {"url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3", "title": "Creative Flow", "duration": 30},
     ]
 }
 
