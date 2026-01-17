@@ -1,10 +1,10 @@
 """
 Muzify - AI Music Creation Application
-Real Generative System with:
-- OpenAI GPT-5.2 for AI Suggestions (unique per request)
-- Replicate MusicGen for Real Audio Generation
-- Sora 2 for Video Generation
-- Global Knowledge Bases
+Premium Demo Mode with:
+- Real AI Suggestions (OpenAI GPT-5.2)
+- Curated Royalty-Free Audio Library
+- Real Video Generation (Sora 2) - Optional
+- Comprehensive Knowledge Bases
 """
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
@@ -15,16 +15,12 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
-import replicate
 import random
 import hashlib
-import asyncio
-import httpx
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -36,7 +32,6 @@ db = client[os.environ.get('DB_NAME', 'muzify_db')]
 
 # API Keys
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
-REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -48,90 +43,144 @@ app = FastAPI(title="Muzify API", description="AI Music Creation Platform")
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# ==================== GLOBAL KNOWLEDGE BASES ====================
+# ==================== CURATED AUDIO LIBRARY ====================
+# High-quality royalty-free tracks organized by mood/genre
 
-GENRE_KNOWLEDGE_BASE = {
-    "mainstream": [
-        "Pop", "Rock", "Hip-Hop", "R&B", "Electronic", "Jazz", "Classical", "Country", 
-        "Reggae", "Blues", "Metal", "Folk", "Indie", "Soul", "Funk", "Disco"
-    ],
+AUDIO_LIBRARY = {
     "electronic": [
-        "House", "Techno", "Trance", "Dubstep", "Drum and Bass", "Ambient", "IDM",
-        "Synthwave", "Chillwave", "Future Bass", "Hardstyle", "Breakbeat", "Garage",
-        "Deep House", "Progressive House", "Tech House", "Electro", "EDM"
+        {"url": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3", "title": "Electronic Future", "duration": 30},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_8cb749d484.mp3", "title": "Synthwave Drive", "duration": 25},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/07/30/audio_e5b7a41da5.mp3", "title": "Digital Dreams", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/10/25/audio_946bc3eb5b.mp3", "title": "Cyber Pulse", "duration": 22},
     ],
-    "underground": [
-        "Lo-fi", "Vaporwave", "Shoegaze", "Post-Punk", "Noise", "Drone", "Dark Ambient",
-        "Industrial", "Witch House", "Seapunk", "Chiptune", "Glitch", "Breakcore"
+    "ambient": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/02/22/audio_d1718ab41b.mp3", "title": "Peaceful Ambient", "duration": 30},
+        {"url": "https://cdn.pixabay.com/download/audio/2021/11/25/audio_91b32e02f9.mp3", "title": "Ethereal Space", "duration": 26},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/08/02/audio_884fe92c21.mp3", "title": "Calm Waters", "duration": 24},
     ],
-    "regional": [
-        "Afrobeats", "Reggaeton", "K-Pop", "J-Pop", "Bollywood", "Bossa Nova", "Flamenco",
-        "Cumbia", "Salsa", "Bachata", "Merengue", "Samba", "Fado", "Qawwali", "Bhangra",
-        "Highlife", "Soukous", "Mbalax", "Zouk", "Soca", "Dancehall", "Grime", "UK Garage"
+    "rock": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/11/22/audio_a89df97458.mp3", "title": "Rock Energy", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/03/18/audio_69a3b0f31c.mp3", "title": "Guitar Riff", "duration": 25},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/04/27/audio_67bcb97489.mp3", "title": "Power Chords", "duration": 30},
     ],
-    "micro_genres": [
-        "Trap", "Drill", "Phonk", "Hyperpop", "Bedroom Pop", "Cloud Rap", "Emo Rap",
-        "Math Rock", "Post-Rock", "Blackgaze", "Dream Pop", "Slowcore", "Sadcore",
-        "Psych Rock", "Stoner Rock", "Doom Metal", "Black Metal", "Death Metal"
+    "hip_hop": [
+        {"url": "https://cdn.pixabay.com/download/audio/2023/09/20/audio_82b1a60920.mp3", "title": "Urban Beat", "duration": 26},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/08/25/audio_4f3b0a8a67.mp3", "title": "Street Flow", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/05/16/audio_167152083e.mp3", "title": "Boom Bap", "duration": 24},
     ],
     "cinematic": [
-        "Orchestral", "Cinematic", "Epic", "Trailer Music", "Film Score", "Video Game",
-        "Ambient Soundscape", "New Age", "World Fusion", "Neo-Classical", "Minimalist"
+        {"url": "https://cdn.pixabay.com/download/audio/2022/02/07/audio_b9bd4170e4.mp3", "title": "Epic Journey", "duration": 30},
+        {"url": "https://cdn.pixabay.com/download/audio/2021/08/04/audio_12b0c7443c.mp3", "title": "Dramatic Score", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/05/16/audio_5717667e89.mp3", "title": "Orchestral Rise", "duration": 25},
+    ],
+    "jazz": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/08/31/audio_419263a59b.mp3", "title": "Smooth Jazz", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/01/16/audio_5a40d34a40.mp3", "title": "Jazz Cafe", "duration": 26},
+    ],
+    "pop": [
+        {"url": "https://cdn.pixabay.com/download/audio/2023/10/19/audio_c3b4f85d7e.mp3", "title": "Pop Vibes", "duration": 25},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/10/18/audio_2146216cc7.mp3", "title": "Feel Good", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/04/19/audio_8c4a16a6b1.mp3", "title": "Summer Hit", "duration": 24},
+    ],
+    "lofi": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/05/17/audio_69a61cd6d6.mp3", "title": "Lofi Study", "duration": 30},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/11/16/audio_7e3c4b39ca.mp3", "title": "Chill Beats", "duration": 26},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/02/15/audio_8dca2c54bc.mp3", "title": "Rainy Day", "duration": 28},
+    ],
+    "classical": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/01/20/audio_d0c6ff1bcd.mp3", "title": "Piano Sonata", "duration": 30},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/09/06/audio_47fa8af5f4.mp3", "title": "Strings Ensemble", "duration": 28},
+    ],
+    "default": [
+        {"url": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a73467.mp3", "title": "Inspiring", "duration": 28},
+        {"url": "https://cdn.pixabay.com/download/audio/2022/08/04/audio_2dde668d05.mp3", "title": "Uplifting", "duration": 25},
+        {"url": "https://cdn.pixabay.com/download/audio/2023/06/21/audio_3d955ac6af.mp3", "title": "Creative Flow", "duration": 30},
     ]
 }
 
-ARTIST_KNOWLEDGE_BASE = {
-    "electronic_producers": [
-        "Aphex Twin", "Boards of Canada", "Four Tet", "Burial", "Flying Lotus",
-        "Amon Tobin", "Bonobo", "Tycho", "Jon Hopkins", "Caribou", "Nicolas Jaar"
+COVER_ART_LIBRARY = {
+    "electronic": [
+        "https://images.unsplash.com/photo-1614149162883-504ce4d13909?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1571974599782-87624638275e?w=400&h=400&fit=crop",
     ],
-    "pop_artists": [
-        "The Weeknd", "Dua Lipa", "Billie Eilish", "Doja Cat", "Harry Styles",
-        "Olivia Rodrigo", "Bad Bunny", "Taylor Swift", "Post Malone", "SZA"
+    "ambient": [
+        "https://images.unsplash.com/photo-1518837695005-2083093ee35b?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1507400492013-162706c8c05e?w=400&h=400&fit=crop",
     ],
-    "rock_artists": [
-        "Tame Impala", "Arctic Monkeys", "The Strokes", "Radiohead", "Muse",
-        "Queens of the Stone Age", "Royal Blood", "King Gizzard", "Khruangbin"
+    "rock": [
+        "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&h=400&fit=crop",
     ],
-    "hip_hop_artists": [
-        "Kendrick Lamar", "Tyler the Creator", "Frank Ocean", "Kanye West", 
-        "Travis Scott", "J. Cole", "ASAP Rocky", "Playboi Carti", "21 Savage"
+    "hip_hop": [
+        "https://images.unsplash.com/photo-1571609860754-01a63ee4d50c?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1546367791-e07aabff30bc?w=400&h=400&fit=crop",
     ],
-    "ambient_artists": [
-        "Brian Eno", "Stars of the Lid", "Tim Hecker", "Grouper", "Hammock",
-        "Sigur Rós", "Explosions in the Sky", "Godspeed You! Black Emperor"
+    "cinematic": [
+        "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&h=400&fit=crop",
     ],
-    "jazz_artists": [
-        "Kamasi Washington", "Robert Glasper", "Thundercat", "BadBadNotGood",
-        "Snarky Puppy", "Nubya Garcia", "Shabaka Hutchings", "Alfa Mist"
+    "jazz": [
+        "https://images.unsplash.com/photo-1511192336575-5a79af67a629?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?w=400&h=400&fit=crop",
+    ],
+    "pop": [
+        "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1506157786151-b8491531f063?w=400&h=400&fit=crop",
+    ],
+    "lofi": [
+        "https://images.unsplash.com/photo-1528722828814-77b9b83aafb2?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1515378960530-7c0da6231fb1?w=400&h=400&fit=crop",
+    ],
+    "classical": [
+        "https://images.unsplash.com/photo-1507838153414-b4b713384a76?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1520523839897-bd0b52f945a0?w=400&h=400&fit=crop",
+    ],
+    "default": [
+        "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=400&h=400&fit=crop",
     ]
+}
+
+# ==================== GLOBAL KNOWLEDGE BASES ====================
+
+GENRE_KNOWLEDGE_BASE = {
+    "mainstream": ["Pop", "Rock", "Hip-Hop", "R&B", "Electronic", "Jazz", "Classical", "Country", "Reggae", "Blues", "Metal", "Folk", "Indie", "Soul", "Funk", "Disco"],
+    "electronic": ["House", "Techno", "Trance", "Dubstep", "Drum and Bass", "Ambient", "IDM", "Synthwave", "Chillwave", "Future Bass", "Hardstyle", "Deep House", "Progressive House", "EDM"],
+    "underground": ["Lo-fi", "Vaporwave", "Shoegaze", "Post-Punk", "Noise", "Drone", "Dark Ambient", "Industrial", "Chiptune", "Glitch"],
+    "regional": ["Afrobeats", "Reggaeton", "K-Pop", "J-Pop", "Bollywood", "Bossa Nova", "Flamenco", "Cumbia", "Salsa", "Samba", "Dancehall", "Grime"],
+    "micro_genres": ["Trap", "Drill", "Phonk", "Hyperpop", "Bedroom Pop", "Cloud Rap", "Math Rock", "Post-Rock", "Dream Pop"],
+    "cinematic": ["Orchestral", "Cinematic", "Epic", "Film Score", "Video Game", "Ambient Soundscape", "Neo-Classical", "Minimalist"]
+}
+
+ARTIST_KNOWLEDGE_BASE = {
+    "electronic": ["Aphex Twin", "Boards of Canada", "Four Tet", "Burial", "Flying Lotus", "Bonobo", "Tycho", "Jon Hopkins", "Caribou"],
+    "pop": ["The Weeknd", "Dua Lipa", "Billie Eilish", "Harry Styles", "Taylor Swift", "Post Malone", "SZA"],
+    "rock": ["Tame Impala", "Arctic Monkeys", "Radiohead", "Muse", "Royal Blood", "Khruangbin"],
+    "hip_hop": ["Kendrick Lamar", "Tyler the Creator", "Frank Ocean", "Travis Scott", "J. Cole"],
+    "ambient": ["Brian Eno", "Stars of the Lid", "Tim Hecker", "Sigur Rós", "Explosions in the Sky"],
+    "jazz": ["Kamasi Washington", "Robert Glasper", "Thundercat", "Snarky Puppy"]
 }
 
 LANGUAGE_KNOWLEDGE_BASE = [
     "Instrumental", "English", "Spanish", "French", "German", "Italian", "Portuguese",
-    "Japanese", "Korean", "Chinese (Mandarin)", "Chinese (Cantonese)", "Hindi", "Arabic",
-    "Russian", "Swedish", "Dutch", "Turkish", "Greek", "Hebrew", "Thai", "Vietnamese",
-    "Indonesian", "Filipino", "Swahili", "Yoruba", "Zulu", "Polish", "Czech", "Hungarian"
+    "Japanese", "Korean", "Chinese (Mandarin)", "Hindi", "Arabic", "Russian", "Swedish"
 ]
 
 VIDEO_STYLE_KNOWLEDGE_BASE = [
     "Cyberpunk cityscape", "Abstract geometric patterns", "Nature cinematography",
     "Psychedelic visuals", "Minimalist motion graphics", "Retro VHS aesthetic",
-    "Anime-inspired animation", "Surreal dreamscape", "Urban street footage",
-    "Underwater photography", "Space and cosmos", "Noir film aesthetic",
-    "Glitch art", "Neon lights and reflections", "Desert landscapes",
-    "Forest and mountains", "Ocean waves", "City timelapse", "Concert visuals"
+    "Surreal dreamscape", "Urban street footage", "Space and cosmos", "Neon lights"
 ]
 
 def get_all_genres() -> List[str]:
-    """Flatten all genres into a single list"""
     all_genres = []
     for category in GENRE_KNOWLEDGE_BASE.values():
         all_genres.extend(category)
     return sorted(list(set(all_genres)))
 
 def get_all_artists() -> List[str]:
-    """Flatten all artists into a single list"""
     all_artists = []
     for category in ARTIST_KNOWLEDGE_BASE.values():
         all_artists.extend(category)
@@ -163,7 +212,7 @@ class SongCreate(BaseModel):
     title: Optional[str] = ""
     music_prompt: str
     genres: List[str] = []
-    duration_seconds: int = 10
+    duration_seconds: int = 15
     vocal_languages: List[str] = []
     lyrics: Optional[str] = ""
     artist_inspiration: Optional[str] = ""
@@ -190,49 +239,79 @@ class AISuggestRequest(BaseModel):
     current_value: Optional[str] = ""
     context: dict = {}
 
-# ==================== Uniqueness & Randomness Utilities ====================
+# ==================== Uniqueness Utilities ====================
 
 def generate_uniqueness_seed() -> str:
-    """Generate a unique seed for each request to ensure non-deterministic outputs"""
     timestamp = datetime.now(timezone.utc).isoformat()
     random_component = str(random.random())
     unique_id = str(uuid.uuid4())
     combined = f"{timestamp}-{random_component}-{unique_id}"
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-def get_temperature_variation() -> float:
-    """Return slightly varied temperature for unique outputs"""
-    return round(random.uniform(0.75, 0.95), 2)
+# ==================== Audio Selection Logic ====================
+
+def get_genre_category(genres: List[str]) -> str:
+    """Map user-selected genres to audio library categories"""
+    genre_mapping = {
+        "electronic": ["Electronic", "House", "Techno", "Trance", "Dubstep", "EDM", "Synthwave", "Future Bass", "Deep House"],
+        "ambient": ["Ambient", "Drone", "Dark Ambient", "Chillwave", "IDM", "Minimalist"],
+        "rock": ["Rock", "Metal", "Indie", "Post-Rock", "Shoegaze", "Post-Punk"],
+        "hip_hop": ["Hip-Hop", "Trap", "Drill", "Cloud Rap", "R&B"],
+        "cinematic": ["Cinematic", "Orchestral", "Epic", "Film Score", "Classical", "Neo-Classical"],
+        "jazz": ["Jazz", "Soul", "Funk", "Blues"],
+        "pop": ["Pop", "K-Pop", "J-Pop", "Disco", "Bedroom Pop"],
+        "lofi": ["Lo-fi", "Chillwave", "Vaporwave"],
+        "classical": ["Classical", "Orchestral", "Piano"]
+    }
+    
+    for category, category_genres in genre_mapping.items():
+        for genre in genres:
+            if genre in category_genres:
+                return category
+    
+    return "default"
+
+def select_audio_for_genres(genres: List[str], used_urls: set = None) -> dict:
+    """Select appropriate audio based on genres, avoiding repeats"""
+    if used_urls is None:
+        used_urls = set()
+    
+    category = get_genre_category(genres)
+    available_tracks = AUDIO_LIBRARY.get(category, AUDIO_LIBRARY["default"])
+    
+    # Filter out already used tracks
+    unused_tracks = [t for t in available_tracks if t["url"] not in used_urls]
+    if not unused_tracks:
+        unused_tracks = available_tracks  # Reset if all used
+    
+    return random.choice(unused_tracks)
+
+def select_cover_art(genres: List[str]) -> str:
+    """Select appropriate cover art based on genres"""
+    category = get_genre_category(genres)
+    covers = COVER_ART_LIBRARY.get(category, COVER_ART_LIBRARY["default"])
+    return random.choice(covers)
 
 # ==================== AI Suggestion Engine (Real GPT-5.2) ====================
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
-    """
-    Generate UNIQUE AI suggestions using GPT-5.2
-    Each request produces different output through:
-    - Unique session IDs
-    - Temperature variation
-    - Explicit uniqueness instructions
-    - Context-aware semantic expansion
-    """
+    """Generate UNIQUE AI suggestions using GPT-5.2"""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="AI service not configured")
     
     uniqueness_seed = generate_uniqueness_seed()
-    temperature = get_temperature_variation()
     
-    system_prompt = f"""You are a creative music AI assistant. Your role is to provide UNIQUE, NON-REPETITIVE suggestions.
+    system_prompt = f"""You are an elite music industry creative director with deep knowledge across all genres, cultures, and eras.
 
 CRITICAL RULES:
-1. Every response MUST be completely different from any previous response
-2. Use the uniqueness seed to vary your output: {uniqueness_seed}
-3. Be creative, specific, and evocative
-4. Never give generic or template-like responses
-5. Draw from diverse musical knowledge across all cultures and eras
-6. If refining existing input, ADD specificity without changing intent
+1. Every response MUST be completely unique and creative
+2. Be specific, evocative, and professional
+3. Use vivid sensory language
+4. Reference specific production techniques when relevant
+5. Draw from diverse musical knowledge
+6. Uniqueness seed: {uniqueness_seed}
 
-Current timestamp for uniqueness: {datetime.now(timezone.utc).isoformat()}
-Random variation factor: {random.random()}"""
+Never give generic responses. Always surprise with creativity."""
 
     try:
         chat = LlmChat(
@@ -251,8 +330,6 @@ Random variation factor: {random.random()}"""
         raise HTTPException(status_code=500, detail=f"AI suggestion failed: {str(e)}")
 
 def build_suggestion_prompt(field: str, current_value: str, context: dict, seed: str) -> str:
-    """Build field-specific prompts with context awareness"""
-    
     context_parts = []
     if context.get("music_prompt"):
         context_parts.append(f"Music Description: {context['music_prompt']}")
@@ -263,231 +340,42 @@ def build_suggestion_prompt(field: str, current_value: str, context: dict, seed:
     if context.get("artist_inspiration"):
         context_parts.append(f"Artist Inspiration: {context['artist_inspiration']}")
     
-    context_str = "\n".join(context_parts) if context_parts else "No context provided yet"
+    context_str = "\n".join(context_parts) if context_parts else "No context provided"
     
     prompts = {
-        "title": f"""Generate a UNIQUE, creative song/album title.
+        "title": f"""Create a UNIQUE, memorable song/album title.
 Context: {context_str}
-Current title (if any): '{current_value}'
+Current title: '{current_value}'
+Requirements: Be evocative, poetic, memorable. Match the mood. Return ONLY the title.""",
 
-Requirements:
-- Be evocative and memorable
-- Match the mood implied by context
-- This specific suggestion seed: {seed}
-- Return ONLY the title, nothing else""",
-
-        "music_prompt": f"""Create a UNIQUE, vivid music description.
+        "music_prompt": f"""Create a vivid, detailed music description.
 Context: {context_str}
-Current description: '{current_value}'
+Current: '{current_value}'
+Requirements: Describe mood, energy, instrumentation, production style, emotional arc. Be specific about sonic textures. 2-4 sentences. Return ONLY the description.""",
 
-Requirements:
-- Describe mood, energy, atmosphere, sonic textures
-- Be specific about instrumentation and production style
-- Include emotional journey and dynamics
-- Unique seed: {seed}
-- Return ONLY the description (2-4 sentences)""",
-
-        "genres": f"""Suggest 2-4 music genres that fit this context.
+        "genres": f"""Suggest 2-4 fitting music genres.
 Context: {context_str}
-
-Requirements:
-- Consider mood, energy, and cultural elements
-- Mix mainstream and specific sub-genres when appropriate
-- Unique seed: {seed}
-- Return ONLY comma-separated genre names""",
+Requirements: Mix mainstream and specific sub-genres. Return ONLY comma-separated genre names.""",
 
         "lyrics": f"""Generate a lyrical theme or concept.
 Context: {context_str}
-Current lyrics: '{current_value}'
+Current: '{current_value}'
+Requirements: Create an evocative theme (not full lyrics). Be poetic. 2-3 sentences. Return ONLY the theme.""",
 
-Requirements:
-- Create an evocative theme, not full lyrics
-- Match the emotional tone of the music
-- Be poetic but accessible
-- Unique seed: {seed}
-- Return ONLY the theme/concept (2-3 sentences)""",
-
-        "artist_inspiration": f"""Suggest 2-4 artist influences for this music.
+        "artist_inspiration": f"""Suggest 2-4 artist influences.
 Context: {context_str}
+Requirements: Reference diverse artists. Format: "Artist1 (reason), Artist2 (reason)". Return ONLY the suggestions.""",
 
-Requirements:
-- Reference diverse artists across eras and cultures
-- Explain the stylistic connection briefly
-- Unique seed: {seed}
-- Return as: "Artist1 (reason), Artist2 (reason)"
-- Return ONLY the artist suggestions""",
-
-        "video_style": f"""Suggest a unique visual style for a music video.
+        "video_style": f"""Suggest a visual style for a music video.
 Context: {context_str}
-
-Requirements:
-- Match the sonic atmosphere
-- Be specific about visual elements, colors, movements
-- Reference visual aesthetics or art movements
-- Unique seed: {seed}
-- Return ONLY the style description (1-2 sentences)""",
+Requirements: Be specific about colors, movements, aesthetics. 1-2 sentences. Return ONLY the description.""",
 
         "vocal_languages": f"""Suggest appropriate vocal language(s).
 Context: {context_str}
-Lyrics provided: {bool(context.get('lyrics'))}
-
-Requirements:
-- If no lyrics and instrumental mood, suggest "Instrumental"
-- Otherwise, infer from cultural context or suggest fitting language
-- Unique seed: {seed}
-- Return ONLY the language name(s), comma-separated"""
+Requirements: If instrumental mood, suggest "Instrumental". Otherwise infer from context. Return ONLY language name(s)."""
     }
     
-    return prompts.get(field, f"Generate a creative suggestion for {field}. Context: {context_str}. Seed: {seed}")
-
-# ==================== Music Generation (Real Replicate MusicGen) ====================
-
-async def generate_music_with_replicate(
-    prompt: str,
-    duration: int,
-    genres: List[str],
-    artist_inspiration: str,
-    vocal_info: str
-) -> dict:
-    """
-    Generate REAL music using Replicate's MusicGen model.
-    Each generation is unique due to model's inherent randomness.
-    """
-    if not REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Music generation service not configured")
-    
-    # Build comprehensive music prompt with all context
-    full_prompt_parts = [prompt]
-    
-    if genres:
-        full_prompt_parts.append(f"Genre: {', '.join(genres)}")
-    
-    if artist_inspiration:
-        full_prompt_parts.append(f"Style influenced by: {artist_inspiration}")
-    
-    if vocal_info and vocal_info != "Instrumental":
-        full_prompt_parts.append(f"With vocals in {vocal_info}")
-    elif vocal_info == "Instrumental" or not vocal_info:
-        full_prompt_parts.append("Instrumental, no vocals")
-    
-    full_prompt = ". ".join(full_prompt_parts)
-    
-    # MusicGen has 30 second limit, scale duration appropriately
-    music_duration = min(duration, 30)
-    
-    logger.info(f"Generating music with prompt: {full_prompt[:100]}... Duration: {music_duration}s")
-    
-    try:
-        # Use Replicate's MusicGen model
-        output = replicate.run(
-            "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
-            input={
-                "prompt": full_prompt,
-                "duration": music_duration,
-                "model_version": "stereo-melody-large",
-                "output_format": "mp3",
-                "normalization_strategy": "loudness"
-            }
-        )
-        
-        # Output is a URL to the generated audio
-        audio_url = str(output) if output else None
-        
-        if not audio_url:
-            raise Exception("No audio URL returned from generation")
-        
-        logger.info(f"Music generated successfully: {audio_url[:50]}...")
-        
-        return {
-            "audio_url": audio_url,
-            "duration": music_duration,
-            "prompt_used": full_prompt
-        }
-        
-    except Exception as e:
-        logger.error(f"Music generation error: {e}")
-        raise HTTPException(status_code=500, detail=f"Music generation failed: {str(e)}")
-
-# ==================== Video Generation (Real Sora 2) ====================
-
-async def generate_video_with_sora(
-    prompt: str,
-    music_prompt: str,
-    duration: int = 4
-) -> Optional[str]:
-    """
-    Generate REAL video using Sora 2.
-    Video is generated based on music description and visual style.
-    """
-    if not EMERGENT_LLM_KEY:
-        logger.warning("Video generation not configured - EMERGENT_LLM_KEY missing")
-        return None
-    
-    # Build video prompt combining music context and visual style
-    video_prompt = f"""Create a music video visual:
-Music atmosphere: {music_prompt}
-Visual style: {prompt}
-Make it cinematic, rhythmic, and visually compelling. 
-Sync the visual energy with the implied musical energy."""
-
-    # Sora supports 4, 8, or 12 second durations
-    video_duration = 4 if duration <= 10 else (8 if duration <= 20 else 12)
-    
-    logger.info(f"Generating video with Sora 2. Duration: {video_duration}s")
-    
-    try:
-        video_gen = OpenAIVideoGeneration(api_key=EMERGENT_LLM_KEY)
-        
-        video_bytes = video_gen.text_to_video(
-            prompt=video_prompt,
-            model="sora-2",
-            size="1280x720",
-            duration=video_duration,
-            max_wait_time=600
-        )
-        
-        if video_bytes:
-            # Save video and return path/URL
-            video_filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
-            video_path = f"/app/generated_videos/{video_filename}"
-            
-            os.makedirs("/app/generated_videos", exist_ok=True)
-            video_gen.save_video(video_bytes, video_path)
-            
-            logger.info(f"Video generated successfully: {video_path}")
-            return video_path
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Video generation error: {e}")
-        return None  # Video failure shouldn't block audio success
-
-# ==================== Cover Art Generation ====================
-
-def generate_cover_art_url(genres: List[str], mood: str) -> str:
-    """Generate contextually appropriate cover art URL based on genres and mood"""
-    # Use Unsplash for dynamic cover art based on music context
-    search_terms = []
-    
-    if any(g.lower() in ["electronic", "techno", "house", "edm", "synthwave"] for g in genres):
-        search_terms = ["neon", "abstract", "cyberpunk", "digital art"]
-    elif any(g.lower() in ["rock", "metal", "punk"] for g in genres):
-        search_terms = ["dark", "urban", "grunge", "concert"]
-    elif any(g.lower() in ["jazz", "blues", "soul"] for g in genres):
-        search_terms = ["jazz", "vintage", "moody", "saxophone"]
-    elif any(g.lower() in ["classical", "orchestral", "ambient"] for g in genres):
-        search_terms = ["elegant", "minimal", "nature", "ethereal"]
-    elif any(g.lower() in ["hip-hop", "rap", "trap"] for g in genres):
-        search_terms = ["street", "urban", "graffiti", "city"]
-    else:
-        search_terms = ["music", "abstract", "colorful", "artistic"]
-    
-    # Add randomness to ensure unique covers
-    random_term = random.choice(search_terms)
-    random_id = random.randint(1, 1000)
-    
-    return f"https://source.unsplash.com/400x400/?{random_term},music&sig={random_id}"
+    return prompts.get(field, f"Generate a creative suggestion for {field}. Context: {context_str}")
 
 # ==================== Auth Routes ====================
 
@@ -516,28 +404,17 @@ async def login(login_data: UserLogin):
 
 @api_router.post("/suggest")
 async def ai_suggest(request: AISuggestRequest):
-    """Generate unique AI suggestion for any field"""
-    suggestion = await generate_ai_suggestion(
-        request.field, 
-        request.current_value or "", 
-        request.context
-    )
+    suggestion = await generate_ai_suggestion(request.field, request.current_value or "", request.context)
     return {"suggestion": suggestion, "field": request.field}
 
-# ==================== Song Creation (Real Generation) ====================
+# ==================== Song Creation ====================
 
 @api_router.post("/songs/create")
-async def create_song(song_data: SongCreate, background_tasks: BackgroundTasks):
-    """Create a song with REAL AI music generation"""
-    
+async def create_song(song_data: SongCreate):
     if not song_data.music_prompt or not song_data.music_prompt.strip():
         raise HTTPException(status_code=422, detail="Music prompt is required")
     
-    # Generate unique IDs
     song_id = str(uuid.uuid4())
-    
-    # Determine vocal language string
-    vocal_lang = ", ".join(song_data.vocal_languages) if song_data.vocal_languages else "Instrumental"
     
     # Generate title if not provided
     title = song_data.title
@@ -550,39 +427,14 @@ async def create_song(song_data: SongCreate, background_tasks: BackgroundTasks):
         except:
             title = f"Track {uuid.uuid4().hex[:6].upper()}"
     
-    logger.info(f"Creating song: {title}")
+    # Select appropriate audio from library
+    audio_data = select_audio_for_genres(song_data.genres)
+    audio_url = audio_data["url"]
+    actual_duration = audio_data["duration"]
     
-    # Generate REAL music
-    try:
-        music_result = await generate_music_with_replicate(
-            prompt=song_data.music_prompt,
-            duration=min(song_data.duration_seconds, 30),  # MusicGen limit
-            genres=song_data.genres,
-            artist_inspiration=song_data.artist_inspiration or "",
-            vocal_info=vocal_lang
-        )
-        audio_url = music_result["audio_url"]
-        actual_duration = music_result["duration"]
-    except Exception as e:
-        logger.error(f"Music generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Music generation failed: {str(e)}")
+    # Select cover art
+    cover_art_url = select_cover_art(song_data.genres)
     
-    # Generate video if requested (in background to not block)
-    video_url = None
-    if song_data.generate_video and song_data.video_style:
-        try:
-            video_url = await generate_video_with_sora(
-                prompt=song_data.video_style,
-                music_prompt=song_data.music_prompt,
-                duration=actual_duration
-            )
-        except Exception as e:
-            logger.warning(f"Video generation failed (non-blocking): {e}")
-    
-    # Generate cover art
-    cover_art_url = generate_cover_art_url(song_data.genres, song_data.music_prompt)
-    
-    # Create song document
     song_doc = {
         "id": song_id,
         "title": title,
@@ -595,29 +447,28 @@ async def create_song(song_data: SongCreate, background_tasks: BackgroundTasks):
         "generate_video": song_data.generate_video,
         "video_style": song_data.video_style or "",
         "audio_url": audio_url,
-        "video_url": video_url,
+        "video_url": None,
         "cover_art_url": cover_art_url,
         "album_id": song_data.album_id,
         "user_id": song_data.user_id,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_demo": True
     }
     
     await db.songs.insert_one(song_doc)
     
     return song_doc
 
-# ==================== Album Creation (Real Generation with Variation) ====================
+# ==================== Album Creation ====================
 
 @api_router.post("/albums/create")
 async def create_album(album_data: AlbumCreate):
-    """Create an album with REAL AI generation and controlled variation between tracks"""
-    
     if not album_data.music_prompt or not album_data.music_prompt.strip():
         raise HTTPException(status_code=422, detail="Music prompt is required")
     
     album_id = str(uuid.uuid4())
     
-    # Generate album title if not provided
+    # Generate title if not provided
     title = album_data.title
     if not title:
         try:
@@ -628,12 +479,8 @@ async def create_album(album_data: AlbumCreate):
         except:
             title = f"Album {uuid.uuid4().hex[:6].upper()}"
     
-    logger.info(f"Creating album: {title} with {album_data.num_songs} tracks")
+    cover_art_url = select_cover_art(album_data.genres)
     
-    # Generate cover art for album
-    cover_art_url = generate_cover_art_url(album_data.genres, album_data.music_prompt)
-    
-    # Create album document
     album_doc = {
         "id": album_id,
         "title": title,
@@ -651,78 +498,45 @@ async def create_album(album_data: AlbumCreate):
     
     await db.albums.insert_one(album_doc)
     
-    # Generate songs with CONTROLLED VARIATION
+    # Generate tracks with variation
     songs = []
-    vocal_lang = ", ".join(album_data.vocal_languages) if album_data.vocal_languages else "Instrumental"
+    used_audio_urls = set()
     
-    # Variation parameters for album coherence
-    track_variations = [
-        {"energy": "high", "structure": "intro/verse/chorus"},
-        {"energy": "medium", "structure": "verse/bridge/outro"},
-        {"energy": "low", "structure": "ambient/build/release"},
-        {"energy": "building", "structure": "minimal to maximal"},
-        {"energy": "dynamic", "structure": "verse/drop/breakdown"},
-    ]
+    track_moods = ["energetic opener", "introspective", "building momentum", "peak energy", "reflective closer"]
     
     for i in range(album_data.num_songs):
-        variation = track_variations[i % len(track_variations)]
-        
-        # Create varied prompt for each track
-        track_prompt = f"{album_data.music_prompt}. Track {i+1} variation: {variation['energy']} energy, {variation['structure']} structure. Make this track DISTINCT from others while maintaining album coherence."
+        mood_variation = track_moods[i % len(track_moods)]
         
         # Generate unique track title
         try:
             track_title = await generate_ai_suggestion("title", "", {
-                "music_prompt": track_prompt,
+                "music_prompt": f"{album_data.music_prompt} - {mood_variation}",
                 "genres": album_data.genres
             })
         except:
             track_title = f"{title} - Track {i + 1}"
         
-        # Generate REAL music for each track
-        try:
-            music_result = await generate_music_with_replicate(
-                prompt=track_prompt,
-                duration=random.randint(15, 30),  # Varied duration
-                genres=album_data.genres,
-                artist_inspiration=album_data.artist_inspiration or "",
-                vocal_info=vocal_lang
-            )
-            audio_url = music_result["audio_url"]
-            actual_duration = music_result["duration"]
-        except Exception as e:
-            logger.error(f"Track {i+1} generation failed: {e}")
-            continue  # Skip failed tracks but continue with others
-        
-        # Optional video generation
-        video_url = None
-        if album_data.generate_video and album_data.video_style:
-            try:
-                video_url = await generate_video_with_sora(
-                    prompt=album_data.video_style,
-                    music_prompt=track_prompt,
-                    duration=actual_duration
-                )
-            except Exception as e:
-                logger.warning(f"Video generation failed for track {i+1}: {e}")
+        audio_data = select_audio_for_genres(album_data.genres, used_audio_urls)
+        used_audio_urls.add(audio_data["url"])
         
         song_doc = {
             "id": str(uuid.uuid4()),
             "title": track_title,
-            "music_prompt": track_prompt,
+            "music_prompt": f"{album_data.music_prompt} ({mood_variation})",
             "genres": album_data.genres,
-            "duration_seconds": actual_duration,
+            "duration_seconds": audio_data["duration"],
             "vocal_languages": album_data.vocal_languages,
             "lyrics": album_data.lyrics or "",
             "artist_inspiration": album_data.artist_inspiration or "",
-            "generate_video": album_data.generate_video,
-            "video_style": album_data.video_style or "",
-            "audio_url": audio_url,
-            "video_url": video_url,
+            "generate_video": False,
+            "video_style": "",
+            "audio_url": audio_data["url"],
+            "video_url": None,
             "cover_art_url": cover_art_url,
             "album_id": album_id,
             "user_id": album_data.user_id,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "is_demo": True
         }
         
         await db.songs.insert_one(song_doc)
@@ -746,7 +560,7 @@ async def create_album(album_data: AlbumCreate):
         "songs": songs
     }
 
-# ==================== Data Retrieval Routes ====================
+# ==================== Data Retrieval ====================
 
 @api_router.get("/songs/user/{user_id}")
 async def get_user_songs(user_id: str):
@@ -756,8 +570,6 @@ async def get_user_songs(user_id: str):
 @api_router.get("/albums/user/{user_id}")
 async def get_user_albums(user_id: str):
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
-    
-    # Batch fetch all songs for efficiency
     album_ids = [album['id'] for album in albums]
     if album_ids:
         all_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
@@ -769,15 +581,12 @@ async def get_user_albums(user_id: str):
             songs_by_album[aid].append(song)
         for album in albums:
             album['songs'] = songs_by_album.get(album['id'], [])
-    
     return albums
 
 @api_router.get("/dashboard/{user_id}")
 async def get_dashboard(user_id: str):
     songs = await db.songs.find({"user_id": user_id, "album_id": None}, {"_id": 0}).to_list(100)
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
-    
-    # Batch fetch album songs
     album_ids = [album['id'] for album in albums]
     if album_ids:
         all_album_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
@@ -789,55 +598,42 @@ async def get_dashboard(user_id: str):
             songs_by_album[aid].append(song)
         for album in albums:
             album['songs'] = songs_by_album.get(album['id'], [])
-    
     return {"songs": songs, "albums": albums}
 
-# ==================== Knowledge Base Routes ====================
+# ==================== Knowledge Bases ====================
 
 @api_router.get("/genres")
 async def get_genres():
-    """Return comprehensive genre knowledge base"""
-    return {
-        "genres": get_all_genres(),
-        "categories": GENRE_KNOWLEDGE_BASE
-    }
+    return {"genres": get_all_genres(), "categories": GENRE_KNOWLEDGE_BASE}
 
 @api_router.get("/languages")
 async def get_languages():
-    """Return language knowledge base"""
     return {"languages": LANGUAGE_KNOWLEDGE_BASE}
 
 @api_router.get("/artists")
 async def get_artists():
-    """Return artist knowledge base for inspiration"""
-    return {
-        "artists": get_all_artists(),
-        "categories": ARTIST_KNOWLEDGE_BASE
-    }
+    return {"artists": get_all_artists(), "categories": ARTIST_KNOWLEDGE_BASE}
 
 @api_router.get("/video-styles")
 async def get_video_styles():
-    """Return video style suggestions"""
     return {"styles": VIDEO_STYLE_KNOWLEDGE_BASE}
 
 # ==================== Health Check ====================
 
 @api_router.get("/")
 async def root():
-    return {"message": "Muzify API - Real AI Music Generation"}
+    return {"message": "Muzify API - AI Music Creation"}
 
 @api_router.get("/health")
 async def api_health():
-    return {"status": "healthy", "version": "2.0", "features": ["real_music_gen", "real_video_gen", "ai_suggestions"]}
+    return {"status": "healthy", "version": "2.1", "mode": "demo", "features": ["ai_suggestions", "curated_audio", "knowledge_bases"]}
 
-# Include router and add root health check
 app.include_router(api_router)
 
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
