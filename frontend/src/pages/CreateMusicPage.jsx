@@ -29,6 +29,7 @@ export default function CreateMusicPage({ user }) {
   const [aiSuggestedFields, setAiSuggestedFields] = useState(new Set());
   const [lastSuggestion, setLastSuggestion] = useState({});
   const [expandedSongIndex, setExpandedSongIndex] = useState(null);
+  const [songReference, setSongReference] = useState(null); // Track which song was used as reference
 
   const [formData, setFormData] = useState({
     title: "",
@@ -308,6 +309,45 @@ export default function CreateMusicPage({ user }) {
     setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
   };
 
+  // Copy song data from a previous song to current song
+  const copySongFromPrevious = (toIndex, fromIndex, copyType = "all") => {
+    const sourceSong = formData.albumSongs[fromIndex];
+    const updates = {};
+
+    switch (copyType) {
+      case "all":
+        // Copy all fields
+        updates.title = sourceSong.title ? `${sourceSong.title} (Variation)` : "";
+        updates.musicPrompt = sourceSong.musicPrompt;
+        updates.selectedGenres = [...sourceSong.selectedGenres];
+        updates.durationSeconds = sourceSong.durationSeconds;
+        updates.vocalLanguages = [...sourceSong.vocalLanguages];
+        updates.lyrics = sourceSong.lyrics;
+        updates.artistInspiration = sourceSong.artistInspiration;
+        updates.videoStyle = sourceSong.videoStyle;
+        break;
+      case "genres":
+        updates.selectedGenres = [...sourceSong.selectedGenres];
+        break;
+      case "languages":
+        updates.vocalLanguages = [...sourceSong.vocalLanguages];
+        break;
+      case "style":
+        updates.musicPrompt = sourceSong.musicPrompt;
+        updates.selectedGenres = [...sourceSong.selectedGenres];
+        updates.vocalLanguages = [...sourceSong.vocalLanguages];
+        break;
+      default:
+        break;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateAlbumSong(toIndex, updates);
+      setSongReference({ songIndex: toIndex, referencedFrom: fromIndex, type: copyType });
+      toast.success(`Track ${toIndex + 1} updated from Track ${fromIndex + 1}`);
+    }
+  };
+
   // Apply AI suggestion to a specific album song
   const applySuggestionToSong = (songIndex, field, suggestion) => {
     const trimmed = (suggestion || "").trim();
@@ -552,7 +592,61 @@ export default function CreateMusicPage({ user }) {
           {/* Expanded Song Details */}
           {mode === "album" && expandedSongIndex !== null && (
             <div className="space-y-6 p-6 rounded-2xl bg-card border border-white/10 animate-fade-in">
-              <h3 className="font-display text-lg font-bold">Track {expandedSongIndex + 1} Details</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-display text-lg font-bold">Track {expandedSongIndex + 1} Details</h3>
+                {songReference?.songIndex === expandedSongIndex && (
+                  <Badge variant="outline" className="text-xs border-blue-500/50 bg-blue-500/10 text-blue-400">
+                    Referenced from Track {songReference.referencedFrom + 1}
+                  </Badge>
+                )}
+              </div>
+
+              {/* Copy from Previous Songs */}
+              {expandedSongIndex > 0 && (
+                <div className="p-4 rounded-lg bg-secondary/50 border border-white/10">
+                  <p className="text-xs uppercase tracking-widest text-muted-foreground mb-3 block font-medium">
+                    Quick Copy from Previous Track
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => copySongFromPrevious(expandedSongIndex, expandedSongIndex - 1, "all")}
+                      className="text-xs h-9"
+                    >
+                      Copy All from Track {expandedSongIndex}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => copySongFromPrevious(expandedSongIndex, expandedSongIndex - 1, "style")}
+                      className="text-xs h-9"
+                    >
+                      Copy Style & Genres
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => copySongFromPrevious(expandedSongIndex, expandedSongIndex - 1, "genres")}
+                      className="text-xs h-9"
+                    >
+                      Copy Genres Only
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => copySongFromPrevious(expandedSongIndex, expandedSongIndex - 1, "languages")}
+                      className="text-xs h-9"
+                    >
+                      Copy Languages
+                    </Button>
+                  </div>
+                </div>
+              )}
               
               {/* Song Title */}
               <div className="space-y-3">
