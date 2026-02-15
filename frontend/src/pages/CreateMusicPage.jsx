@@ -6,7 +6,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Slider } from "../components/ui/slider";
 import { Switch } from "../components/ui/switch";
 import { Badge } from "../components/ui/badge";
-import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Search, X, Volume2, ChevronDown } from "lucide-react";
+import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Search, X, Volume2, ChevronDown, Film } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
 import { API } from "../App";
@@ -26,6 +26,9 @@ export default function CreateMusicPage({ user }) {
   const [languageSearch, setLanguageSearch] = useState("");
   const [durationInput, setDurationInput] = useState("25s");
   const [showAllGenres, setShowAllGenres] = useState(false);
+  const [suggestedFields, setSuggestedFields] = useState(new Set());
+  const [generatingVideo, setGeneratingVideo] = useState({});
+  const [videoModal, setVideoModal] = useState(null);
 
   const [formData, setFormData] = useState({
     title: "",
@@ -38,7 +41,10 @@ export default function CreateMusicPage({ user }) {
     generateVideo: false,
     videoStyle: "",
     numSongs: 3,
+    albumSongs: [], // Per-song data for albums
   });
+
+  const [suggestedFields, setSuggestedFields] = useState(new Set());
 
   useEffect(() => {
     fetchKnowledgeBases();
@@ -183,12 +189,23 @@ export default function CreateMusicPage({ user }) {
     const trimmed = (suggestion || "").trim();
     if (!trimmed) return;
 
+    // Mark field as suggested for visual highlighting
+    setSuggestedFields((prev) => new Set([...prev, field]));
+    setTimeout(() => {
+      setSuggestedFields((prev) => {
+        const updated = new Set(prev);
+        updated.delete(field);
+        return updated;
+      });
+    }, 3000); // Highlight for 3 seconds
+
     const updates = {
       title: { title: suggestion },
       music_prompt: { musicPrompt: suggestion },
       lyrics: { lyrics: suggestion },
       artist_inspiration: { artistInspiration: suggestion },
       video_style: { videoStyle: suggestion },
+      duration: { durationSeconds: parseInt(suggestion) || 25 },
     };
 
     if (updates[field]) {
@@ -269,6 +286,39 @@ export default function CreateMusicPage({ user }) {
     setAudioRef(audio);
     setPlayingTrack(trackId);
   }, [audioRef, playingTrack]);
+
+  const generateSongVideo = async (songId) => {
+    try {
+      setGeneratingVideo((prev) => ({ ...prev, [songId]: true }));
+      const response = await axios.post(`${API}/songs/${songId}/generate-video?user_id=${user.id}`);
+      
+      // Update result with video URL
+      if (result && result.data.id === songId) {
+        setResult((prev) => ({
+          ...prev,
+          data: { ...prev.data, video_url: response.data.video_url }
+        }));
+      } else if (result && result.data.songs) {
+        setResult((prev) => ({
+          ...prev,
+          data: {
+            ...prev.data,
+            songs: prev.data.songs.map((s) =>
+              s.id === songId ? { ...s, video_url: response.data.video_url } : s
+            )
+          }
+        }));
+      }
+      
+      const msg = response.data?.message || "Video generated successfully!";
+      toast.success(msg, response.data?.status === "processing" ? { duration: 5000 } : {});
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to generate video");
+      console.error("Video generation error:", error);
+    } finally {
+      setGeneratingVideo((prev) => ({ ...prev, [songId]: false }));
+    }
+  };
 
   const SuggestButton = ({ field }) => (
     <Button
@@ -357,7 +407,11 @@ export default function CreateMusicPage({ user }) {
               placeholder={`Enter ${mode === "single" ? "track" : "album"} name or let AI suggest...`}
               value={formData.title}
               onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              className="h-14 text-lg bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary transition-colors"
+              className={`h-14 text-lg bg-transparent border-0 border-b-2 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary transition-all ${
+                suggestedFields.has("title")
+                  ? "border-primary ring-2 ring-primary/30 animate-pulse"
+                  : "border-white/10"
+              }`}
               data-testid="title-input"
             />
           </div>
@@ -377,7 +431,11 @@ export default function CreateMusicPage({ user }) {
               placeholder="Describe the mood, energy, atmosphere, instruments... Be as detailed as you like. This is the main input that shapes your music."
               value={formData.musicPrompt}
               onChange={(e) => setFormData({ ...formData, musicPrompt: e.target.value })}
-              className="min-h-[140px] text-base leading-relaxed bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary resize-none p-4"
+              className={`min-h-[140px] text-base leading-relaxed bg-card border rounded-xl focus-visible:ring-1 focus-visible:border-primary resize-none p-4 transition-all ${
+                suggestedFields.has("music_prompt")
+                  ? "border-primary ring-2 ring-primary/30 animate-pulse"
+                  : "border-white/10"
+              }`}
               data-testid="music-prompt-input"
             />
           </div>
@@ -415,7 +473,11 @@ export default function CreateMusicPage({ user }) {
                 {formData.selectedGenres.map((genre) => (
                   <Badge
                     key={genre}
-                    className="bg-primary text-primary-foreground cursor-pointer hover:bg-primary/80 pr-1"
+                    className={`cursor-pointer hover:bg-primary/80 pr-1 transition-all ${
+                      suggestedFields.has("genres")
+                        ? "bg-primary text-primary-foreground ring-2 ring-primary/50 animate-pulse"
+                        : "bg-primary text-primary-foreground"
+                    }`}
                     onClick={() => toggleGenre(genre)}
                   >
                     {genre}
@@ -431,9 +493,11 @@ export default function CreateMusicPage({ user }) {
                 <Badge
                   key={genre}
                   variant={formData.selectedGenres.includes(genre) ? "default" : "outline"}
-                  className={`badge-interactive ${
+                  className={`badge-interactive transition-all ${
                     formData.selectedGenres.includes(genre)
-                      ? "bg-primary text-primary-foreground"
+                      ? suggestedFields.has("genres")
+                        ? "bg-primary text-primary-foreground ring-2 ring-primary/50 animate-pulse"
+                        : "bg-primary text-primary-foreground"
                       : "border-white/10 hover:border-white/20 hover:bg-white/5"
                   }`}
                   onClick={() => toggleGenre(genre)}
@@ -467,7 +531,11 @@ export default function CreateMusicPage({ user }) {
                   onChange={handleDurationInputChange}
                   onBlur={handleDurationInputBlur}
                   onFocus={(e) => e.target.select()}
-                  className="w-32 h-11 font-mono text-center bg-secondary/50"
+                  className={`w-32 h-11 font-mono text-center bg-secondary/50 rounded-lg border transition-all ${
+                    suggestedFields.has("duration")
+                      ? "border-primary ring-2 ring-primary/30 animate-pulse"
+                      : "border-transparent"
+                  }`}
                   placeholder="e.g. 1:30 or 90 or 1h 5m"
                   data-testid="duration-input"
                 />
@@ -521,7 +589,11 @@ export default function CreateMusicPage({ user }) {
                 {formData.vocalLanguages.map((lang) => (
                   <Badge
                     key={lang}
-                    className="bg-primary text-primary-foreground cursor-pointer hover:bg-primary/80 pr-1"
+                    className={`cursor-pointer hover:bg-primary/80 pr-1 transition-all ${
+                      suggestedFields.has("vocal_languages")
+                        ? "bg-primary text-primary-foreground ring-2 ring-primary/50 animate-pulse"
+                        : "bg-primary text-primary-foreground"
+                    }`}
                     onClick={() => toggleLanguage(lang)}
                   >
                     {lang}
@@ -535,9 +607,11 @@ export default function CreateMusicPage({ user }) {
                 <Badge
                   key={lang}
                   variant={formData.vocalLanguages.includes(lang) ? "default" : "outline"}
-                  className={`badge-interactive ${
+                  className={`badge-interactive transition-all ${
                     formData.vocalLanguages.includes(lang)
-                      ? "bg-primary text-primary-foreground"
+                      ? suggestedFields.has("vocal_languages")
+                        ? "bg-primary text-primary-foreground ring-2 ring-primary/50 animate-pulse"
+                        : "bg-primary text-primary-foreground"
                       : "border-white/10 hover:border-white/20 hover:bg-white/5"
                   }`}
                   onClick={() => toggleLanguage(lang)}
@@ -559,7 +633,11 @@ export default function CreateMusicPage({ user }) {
               placeholder="Enter themes, stories, or actual lyrics..."
               value={formData.lyrics}
               onChange={(e) => setFormData({ ...formData, lyrics: e.target.value })}
-              className="min-h-[100px] bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary resize-none p-4"
+              className={`min-h-[100px] bg-card border rounded-xl focus-visible:ring-1 resize-none p-4 transition-all ${
+                suggestedFields.has("lyrics")
+                  ? "border-primary ring-2 ring-primary/30 focus-visible:border-primary animate-pulse"
+                  : "border-white/10 focus-visible:ring-primary"
+              }`}
               data-testid="lyrics-input"
             />
           </div>
@@ -574,7 +652,11 @@ export default function CreateMusicPage({ user }) {
               placeholder="e.g., Tame Impala, The Weeknd, Bonobo..."
               value={formData.artistInspiration}
               onChange={(e) => setFormData({ ...formData, artistInspiration: e.target.value })}
-              className="h-12 bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
+              className={`h-12 bg-transparent border-0 border-b-2 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary transition-all ${
+                suggestedFields.has("artist_inspiration")
+                  ? "border-primary ring-2 ring-primary/30 animate-pulse"
+                  : "border-white/10"
+              }`}
               data-testid="artist-inspiration-input"
             />
             {!formData.artistInspiration && (
@@ -670,18 +752,49 @@ export default function CreateMusicPage({ user }) {
                   track={result.data}
                   isPlaying={playingTrack === result.data.id}
                   onPlay={() => playTrack(result.data.audio_url, result.data.id)}
+                  onGenerateVideo={generateSongVideo}
+                  generatingVideo={generatingVideo}
+                  onWatchVideo={setVideoModal}
                 />
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-5 mb-8 p-5 rounded-2xl glass">
-                    <img
-                      src={result.data.cover_art_url}
-                      alt={result.data.title}
-                      className="w-28 h-28 rounded-xl object-cover shadow-lg"
-                    />
-                    <div>
-                      <h3 className="text-2xl font-bold">{result.data.title}</h3>
-                      <p className="text-muted-foreground mt-1">{result.data.songs?.length || 0} tracks</p>
+                  <div className="flex items-center justify-between gap-5 mb-8 p-5 rounded-2xl glass">
+                    <div className="flex items-center gap-5">
+                      <img
+                        src={result.data.cover_art_url}
+                        alt={result.data.title}
+                        className="w-28 h-28 rounded-xl object-cover shadow-lg"
+                      />
+                      <div>
+                        <h3 className="text-2xl font-bold">{result.data.title}</h3>
+                        <p className="text-muted-foreground mt-1">{result.data.songs?.length || 0} tracks</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => {
+                          const zip = new (window.require ? window.require('jszip') : window.JSZip)();
+                          result.data.songs?.forEach((song, i) => {
+                            zip.file(`${i + 1}-${song.title}.mp3`, fetch(song.audio_url).then(r => r.blob()));
+                          });
+                          zip.generateAsync({ type: 'blob' }).then(blob => {
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `${result.data.title}.zip`;
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                          });
+                        }}
+                        data-testid="download-album-btn"
+                      >
+                        <Download className="w-4 h-4" />
+                        Download All
+                      </Button>
                     </div>
                   </div>
                   {result.data.songs?.map((track, i) => (
@@ -691,10 +804,45 @@ export default function CreateMusicPage({ user }) {
                       index={i + 1}
                       isPlaying={playingTrack === track.id}
                       onPlay={() => playTrack(track.audio_url, track.id)}
+                      onGenerateVideo={generateSongVideo}
+                      generatingVideo={generatingVideo}
+                      onWatchVideo={setVideoModal}
                     />
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Video Modal */}
+        {videoModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            onClick={() => setVideoModal(null)}
+          >
+            <div
+              className="relative max-w-4xl w-full bg-card rounded-2xl overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setVideoModal(null)}
+                className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="p-4 border-b border-white/5">
+                <h3 className="font-semibold truncate pr-12">
+                  {typeof videoModal === 'string' ? 'Video' : videoModal.title}
+                </h3>
+              </div>
+              <video
+                src={typeof videoModal === 'string' ? videoModal : videoModal.url}
+                poster={typeof videoModal === 'string' ? undefined : videoModal.thumbnail}
+                controls
+                autoPlay
+                className="w-full aspect-video bg-black"
+              />
             </div>
           </div>
         )}
@@ -703,7 +851,7 @@ export default function CreateMusicPage({ user }) {
   );
 }
 
-const TrackCard = ({ track, index, isPlaying, onPlay }) => {
+const TrackCard = ({ track, index, isPlaying, onPlay, onGenerateVideo, generatingVideo, onWatchVideo }) => {
   const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
   return (
@@ -736,6 +884,30 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
 
       {/* Actions */}
       <div className="flex items-center gap-2">
+        {track.video_url ? (
+          <button
+            onClick={() => onWatchVideo?.(track.video_url, track.title, track.video_thumbnail)}
+            className="p-2.5 rounded-lg hover:bg-white/5 transition-colors"
+            title="Watch video"
+            data-testid={`watch-video-btn-${track.id}`}
+          >
+            <Film className="w-5 h-5 text-primary" />
+          </button>
+        ) : (
+          <button
+            onClick={() => onGenerateVideo?.(track.id)}
+            disabled={generatingVideo?.[track.id]}
+            className="p-2.5 rounded-lg hover:bg-white/5 transition-colors disabled:opacity-50"
+            title="Generate video"
+            data-testid={`generate-video-btn-${track.id}`}
+          >
+            {generatingVideo?.[track.id] ? (
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+            ) : (
+              <Film className="w-5 h-5 text-muted-foreground hover:text-primary" />
+            )}
+          </button>
+        )}
         <a
           href={track.audio_url}
           download

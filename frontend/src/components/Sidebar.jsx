@@ -16,34 +16,29 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
       }`}
       data-testid="sidebar"
     >
-      {/* Logo */}
-      <div className="p-6 border-b border-white/5 flex items-center justify-between">
-        <div className={`flex items-center gap-3 ${isCollapsed ? "hidden" : ""}`}>
-          <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center shadow-lg glow-primary-sm">
+      {/* Logo with Collapse Button */}
+      <div className="p-6 border-b border-white/5 flex items-center justify-between gap-2">
+        <div className={`flex items-center gap-3 flex-1 ${isCollapsed ? "justify-center" : ""}`}>
+          <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center shadow-lg glow-primary-sm flex-shrink-0">
             <Music className="w-5 h-5 text-primary-foreground" />
           </div>
-          <div>
-            <span className="font-display text-xl font-bold tracking-tight">Muzify</span>
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Sparkles className="w-3 h-3 text-primary" />
-              AI Music
+          {!isCollapsed && (
+            <div className="flex-1">
+              <span className="font-display text-xl font-bold tracking-tight block">Muzify</span>
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <Sparkles className="w-3 h-3 text-primary" />
+                AI Music
+              </div>
             </div>
-          </div>
+          )}
         </div>
-        {isCollapsed && (
-          <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center shadow-lg glow-primary-sm">
-            <Music className="w-5 h-5 text-primary-foreground" />
-          </div>
-        )}
-      </div>
-
-      {/* Collapse/Expand Button */}
-      <div className={`px-4 py-3 ${isCollapsed ? "flex justify-center" : ""}`}>
+        
+        {/* Collapse/Expand Button - Top Right */}
         <Button
           variant="ghost"
-          size="sm"
+          size="icon"
           onClick={() => onCollapsedChange(!isCollapsed)}
-          className="h-10 w-10 p-0 hover:bg-white/10"
+          className="h-9 w-9 p-0 hover:bg-white/10 flex-shrink-0"
           title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           data-testid="sidebar-toggle"
         >

@@ -19,7 +19,15 @@ export default function DashboardPage({ user }) {
   const fetchDashboard = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/dashboard/${user.id}`);
-      setData(response.data);
+      // Sort songs by created_at descending (newest first)
+      const sortedSongs = (response.data.songs || []).sort(
+        (a, b) => new Date(b.created_at) - new Date(a.created_at)
+      );
+      // Sort albums by created_at descending (newest first)
+      const sortedAlbums = (response.data.albums || []).sort(
+        (a, b) => new Date(b.created_at) - new Date(a.created_at)
+      );
+      setData({ songs: sortedSongs, albums: sortedAlbums });
     } catch (error) {
       console.error("Failed to fetch dashboard:", error);
     } finally {

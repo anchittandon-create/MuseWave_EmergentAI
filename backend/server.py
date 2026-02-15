@@ -398,95 +398,121 @@ def build_suggestion_prompt(field: str, current_value: str, context: dict, seed:
 Context: {context_str}
 Current title: '{current_value}'
 
+This is uniqueness seed {seed} - Ensure MAXIMUM CREATIVITY and NO similarity to previous suggestions.
+
 Requirements:
 - Be poetic, memorable, and emotionally resonant
 - Match the mood and energy of the music
 - Avoid generic terms like "Song", "Track", "Music"
 - Make it memorable for listeners
-- Consider wordplay, metaphors, or cultural references
+- Consider wordplay, metaphors, literary references, or cultural nuances
+- Draw from unexpected sources (literature, science, nature, emotions)
+- Use alliteration, assonance, or unexpected word combinations
 - Return ONLY the title, no explanation
 
+Uniqueness Instructions: Be wildly creative. Think of 5 different angles and choose the most unexpected one.
 Seed: {seed}""",
 
         "music_prompt": f"""CRITICAL: Write a vivid, detailed, professional music production description that would guide a music producer.
 Context: {context_str}
 Current: '{current_value}'
 
+This is uniqueness seed {seed} - Ensure completely DIFFERENT approach from previous descriptions.
+
 Requirements:
-- Describe the sonic landscape, mood, energy, and emotional arc
+- Describe the sonic landscape, mood, energy, and emotional arc DIFFERENTLY
 - Be specific about instrumentation and production techniques
-- Include production style (analog, digital, hybrid)
-- Describe texture, rhythm patterns, and dynamics
-- Reference specific production techniques where relevant
+- Include specific production style (analog warmth, digital precision, lo-fi authenticity, experimental)
+- Describe texture, rhythm patterns, dynamics, and spatial qualities
+- Reference specific production techniques (sidechain, automation, bit-crushing, reverb design, EQ curves)
+- Include unexpected sonic elements
 - 2-4 sentences maximum
 - Return ONLY the description, no explanation
 
+Take a completely different creative direction than previous attempts.
 Seed: {seed}""",
 
-        "genres": f"""CRITICAL: Suggest 2-4 precise music genres/sub-genres that perfectly fit this music.
+        "genres": f"""CRITICAL: Suggest 2-4 precise music genres/sub-genres that perfectly fit this music - COMPLETELY DIFFERENT from previous suggestions.
 Context: {context_str}
+Uniqueness seed: {seed}
+
 Requirements:
-- Mix mainstream genres with specific sub-genres
-- Be creative and unexpected (not predictable)
-- Consider the production style and mood
-- Include at least one niche or emerging genre
+- Mix mainstream genres with SPECIFIC niche sub-genres
+- Be creative, unexpected, and original (avoid predictable combinations)
+- Consider deep production style and emotional mood
+- Include at least one emerging or experimental genre
+- Look beyond surface-level genre categorization
 - Format: Comma-separated genre names only
 - Return ONLY the genres, no explanation
 
+Force yourself to suggest genres nobody would expect but still make perfect sense.
 Seed: {seed}""",
 
-        "lyrics": f"""CRITICAL: Create an evocative lyrical theme, concept, or hook that captures the music's essence.
+        "lyrics": f"""CRITICAL: Create an evocative, UNIQUE lyrical theme, concept, or hook that captures the music's essence - NEVER similar to previous concepts.
 Context: {context_str}
 Current: '{current_value}'
 
+Uniqueness seed {seed}
+
 Requirements:
-- Create a memorable theme or concept (not full lyrics)
-- Be poetic, mysterious, or intriguing
-- Align with the musical mood and genres
-- Could be a hook, concept, or thematic statement
-- 1-3 sentences
+- Create a memorable theme or concept (not full lyrics, but vivid enough to inspire songwriting)
+- Be poetic, mysterious, intriguing, or thought-provoking
+- Align deeply with the musical mood and genres
+- Could be metaphorical, abstract, or story-based
+- Use unexpected imagery and cultural references
+- 1-3 sentences of pure creativity
 - Return ONLY the lyrical concept, no explanation
 
+Think outside conventional songwriting tropes. Be bold and original.
 Seed: {seed}""",
 
-        "artist_inspiration": f"""CRITICAL: Suggest 2-4 specific artist influences with brief reasons that fit this music style.
+        "artist_inspiration": f"""CRITICAL: Suggest 2-4 specific artist influences with brief explanations - COMPLETELY DIFFERENT from previous suggestions.
 Context: {context_str}
+Seed {seed}
 
 Requirements:
-- Reference established and emerging artists
-- Provide specific reasons for each artist (production style, energy, vibe, etc.)
-- Mix mainstream and underground artists
-- Format: "Artist1 (production style/vibe), Artist2 (reason), ..."
-- Be creative and specific
+- Reference a mix of established legends AND emerging/underground artists
+- Provide SPECIFIC technical or stylistic reasons for each (production approach, sound design, emotional intensity, cultural perspective, career influence)
+- Include artists from different eras, cultures, and genres where relevant
+- Format: "Artist1 (specific reason), Artist2 (different reason), ..."
+- Be thoughtful, specific, and surprising
 - Return ONLY the suggestions, no explanation
 
+Think deeply about WHY each artist fits, not just that they do.
 Seed: {seed}""",
 
-        "video_style": f"""CRITICAL: Suggest a specific, cinematic visual style for a music video that matches the music.
+        "video_style": f"""CRITICAL: Suggest a specific, cinematic visual style for a music video - COMPLETELY ORIGINAL from previous suggestions.
 Context: {context_str}
+Seed {seed}
 
 Requirements:
-- Be specific about color palettes, movement, and aesthetics
-- Reference visual styles, cinematography techniques, or film movements
-- Include mood, atmosphere, and emotional impact
-- Describe camera work and visual metaphors
-- Could reference specific films, directors, or visual artists
-- 2-3 sentences
+- Be VERY specific about color palettes, camera movement, editing pace, and visual metaphors
+- Reference visual movements, cinematography styles, directors, or films
+- Include mood, atmosphere, lighting design, and emotional impact
+- Describe actual camera techniques (tracking shots, jump cuts, slow-motion, perspective shifts)
+- Could reference art movements, fashion eras, or visual artists
+- Include production design elements (sets, props, locations)
+- 3-4 sentences of vivid visual storytelling
 - Return ONLY the visual description, no explanation
 
+Paint a completely different visual picture than previously suggested.
 Seed: {seed}""",
 
-        "vocal_languages": f"""CRITICAL: Suggest the most appropriate vocal language(s) for this music.
+        "vocal_languages": f"""CRITICAL: Suggest the most appropriate vocal language(s) for this music - ORIGINAL suggestion.
 Context: {context_str}
+Seed {seed}
 
 Requirements:
-- If music style suggests instrumental, respond: "Instrumental"
-- If vocals suggested, choose specific language(s) that match the vibe
-- Consider: cultural roots, emotional tone, phonetic qualities
-- Could suggest multilingual approach
-- Be creative and specific
+- If music is clearly instrumental-focused, respond: "Instrumental"
+- If vocals suggested, choose specific language(s) matching the vibe and production style
+- Consider: cultural authenticity, phonetic beauty, emotional connotations, linguistic flow
+- Could suggest unexpected language choices for dramatic effect
+- Could suggest multilingual/code-switching approach
+- Consider regional dialects, artificial languages, or vocal textures beyond traditional languages
+- Be creative, specific, and justified
 - Return ONLY the language name(s), no explanation
 
+Think culturally and emotionally about what vocals would enhance this music.
 Seed: {seed}"""
     }
     
