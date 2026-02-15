@@ -40,6 +40,7 @@ db = client[os.environ.get('DB_NAME', 'muzify_db')]
 
 # API Keys
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -727,18 +728,90 @@ async def get_dashboard(user_id: str):
 
 # ==================== Video Generation Utilities ====================
 
-# Reliable sample video URL for placeholder - short clip that plays in all browsers
-# In production, replace with Sora API or similar video generation
 _SAMPLE_VIDEO_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
 
+# Replicate model for AI video generation (minimax video-01: text + image to video)
+REPLICATE_VIDEO_MODEL = "minimax/video-01"
 
-def generate_video_placeholder(song_data: dict) -> str:
-    """Return a playable video URL for the song.
 
-    Uses a sample video URL as placeholder. In production, this would call
-    Sora API or similar to generate a custom video from song metadata.
-    """
-    return _SAMPLE_VIDEO_URL
+def _build_video_prompt(song_data: dict) -> str:
+    """Build a cinematic prompt for video generation from song metadata."""
+    title = song_data.get("title", "Music")[:40]
+    style = song_data.get("video_style", "").strip() or "cinematic, atmospheric"
+    prompt = song_data.get("music_prompt", "")[:80]
+    genres = ", ".join(song_data.get("genres", [])[:3])
+    parts = [f"Music video for '{title}'"]
+    if style:
+        parts.append(style)
+    if prompt:
+        parts.append(f"Mood: {prompt}")
+    if genres:
+        parts.append(f"Genres: {genres}")
+    return ". ".join(parts) + ". Smooth motion, professional cinematography, vibrant colors."
+
+
+def _get_thumbnail_data_url(song_data: dict, max_size_kb: int = 200) -> Optional[str]:
+    """Get thumbnail as data URL, compressed to stay under max_size_kb for Replicate."""
+    try:
+        width, height = 1280, 720
+        img = Image.new("RGB", (width, height), color=(20, 20, 40))
+        draw = ImageDraw.Draw(img)
+        for i in range(height):
+            color_val = int(20 + (i / height) * 60)
+            draw.line([(0, i), (width, i)], fill=(color_val, color_val // 2, color_val + 40))
+        genres = song_data.get("genres", [])
+        if genres:
+            accent_color = (100, 150, 255) if "Electronic" in genres else (200, 100, 255)
+            for x in range(100, width, 200):
+                draw.ellipse([x - 50, 150, x + 50, 250], outline=accent_color, width=3)
+        try:
+            title_text = song_data.get("title", "AI Music")[:30]
+            draw.text((width // 2, height // 2 - 40), title_text, fill=(255, 255, 255), anchor="mm")
+            prompt_text = (song_data.get("music_prompt", "") or "")[:50]
+            if prompt_text:
+                draw.text((width // 2, height // 2 + 40), prompt_text, fill=(200, 200, 200), anchor="mm")
+        except Exception:
+            pass
+        buf = io.BytesIO()
+        for quality in [70, 60, 50, 40]:
+            buf.seek(0)
+            buf.truncate(0)
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            if len(buf.getvalue()) <= max_size_kb * 1024:
+                break
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception as e:
+        logger.error(f"Error creating thumbnail for video: {e}")
+        return None
+
+
+def _generate_video_via_replicate(song_data: dict) -> Optional[str]:
+    """Generate video using Replicate AI (minimax/video-01). Returns video URL or None."""
+    if not REPLICATE_API_TOKEN:
+        logger.info("REPLICATE_API_TOKEN not set, skipping AI video generation")
+        return None
+    try:
+        import replicate
+        prompt = _build_video_prompt(song_data)
+        image_url = _get_thumbnail_data_url(song_data)
+        input_params = {"prompt": prompt, "prompt_optimizer": True}
+        if image_url and len(image_url) < 256 * 1024:  # Replicate data URL limit ~256KB
+            input_params["first_frame_image"] = image_url
+        output = replicate.run(
+            REPLICATE_VIDEO_MODEL,
+            input=input_params,
+        )
+        if isinstance(output, str):
+            return output
+        if isinstance(output, (list, tuple)) and output:
+            return output[0] if isinstance(output[0], str) else str(output[0])
+        if hasattr(output, "url"):
+            return getattr(output, "url", None)
+        return None
+    except Exception as e:
+        logger.error(f"Replicate video generation failed: {e}")
+        return None
 
 def generate_video_thumbnail(song_data: dict) -> str:
     """Generate a video thumbnail/poster for the song based on its metadata"""
