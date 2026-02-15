@@ -46,27 +46,33 @@ export default function CreateMusicPage({ user }) {
 
   // Initialize album songs when number changes
   useEffect(() => {
-    if (mode === "album" && formData.albumSongs.length !== formData.numSongs) {
-      const newSongs = [];
-      for (let i = 0; i < formData.numSongs; i++) {
-        if (i < formData.albumSongs.length) {
-          newSongs.push(formData.albumSongs[i]);
-        } else {
-          newSongs.push({
-            title: "",
-            musicPrompt: "",
-            selectedGenres: [],
-            durationSeconds: 25,
-            vocalLanguages: [],
-            lyrics: "",
-            artistInspiration: "",
-            videoStyle: "",
-          });
+    if (mode === "album") {
+      const currentSongsCount = formData.albumSongs.length;
+      const requiredSongsCount = formData.numSongs;
+      
+      if (currentSongsCount !== requiredSongsCount) {
+        const newSongs = [];
+        for (let i = 0; i < requiredSongsCount; i++) {
+          if (i < currentSongsCount) {
+            newSongs.push(formData.albumSongs[i]);
+          } else {
+            newSongs.push({
+              title: "",
+              musicPrompt: "",
+              selectedGenres: [],
+              durationSeconds: 25,
+              vocalLanguages: [],
+              lyrics: "",
+              artistInspiration: "",
+              videoStyle: "",
+            });
+          }
         }
+        setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
       }
-      setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
     }
-  }, [formData.numSongs, formData.albumSongs.length, mode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.numSongs, mode]);
 
   useEffect(() => {
     fetchKnowledgeBases();
