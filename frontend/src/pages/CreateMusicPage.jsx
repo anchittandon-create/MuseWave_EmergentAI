@@ -66,7 +66,7 @@ export default function CreateMusicPage({ user }) {
       }
       setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
     }
-  }, [formData.numSongs, mode]);
+  }, [formData.numSongs, formData.albumSongs.length, mode]);
 
   useEffect(() => {
     fetchKnowledgeBases();
