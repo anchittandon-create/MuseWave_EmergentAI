@@ -243,6 +243,21 @@ export default function DashboardPage({ user }) {
                         <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
                       ))}
                     </div>
+                    {/* Accuracy Percentage */}
+                    {song.accuracy_percentage && (
+                      <div className="mb-4 p-2.5 rounded-lg bg-gradient-to-r from-primary/10 to-blue-500/10">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium text-primary">Match Accuracy</span>
+                          <span className="text-xs font-bold text-primary">{song.accuracy_percentage}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-gradient-to-r from-primary to-blue-500 transition-all duration-300"
+                            style={{ width: `${song.accuracy_percentage}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <Button
                         size="sm"

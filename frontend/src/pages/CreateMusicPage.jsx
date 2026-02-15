@@ -60,9 +60,16 @@ export default function CreateMusicPage({ user }) {
   };
 
   const formatDuration = (seconds) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${secs}s`;
+    } else if (minutes > 0) {
+      return `${minutes}:${secs.toString().padStart(2, "0")}`;
+    } else {
+      return `${secs}s`;
+    }
   };
 
   const toggleGenre = (genre) => {
@@ -150,6 +157,7 @@ export default function CreateMusicPage({ user }) {
         setFormData({ ...formData, vocalLanguages: ["Instrumental"] });
       }
     }
+    toast.success("Suggestion applied!", { duration: 1000 });
   };
 
   const handleSubmit = async () => {
@@ -399,7 +407,7 @@ export default function CreateMusicPage({ user }) {
               <Slider
                 value={[formData.durationSeconds]}
                 onValueChange={(v) => setFormData({ ...formData, durationSeconds: v[0] })}
-                max={30}
+                max={72000}
                 min={10}
                 step={1}
                 className="w-full"
@@ -407,7 +415,7 @@ export default function CreateMusicPage({ user }) {
               />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>10s</span>
-                <span>30s</span>
+                <span>20 hours</span>
               </div>
             </div>
           )}
