@@ -4,10 +4,13 @@
   "outputDirectory": "frontend/build",
   "framework": "create-react-app",
   "installCommand": "cd frontend && npm install --legacy-peer-deps",
+  "env": {
+    "REACT_APP_BACKEND_URL": "https://muzify-1.preview.emergentagent.com"
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://your-backend-api-url/api/:path*"
+      "destination": "https://muzify-1.preview.emergentagent.com/api/:path*"
     },
     {
       "source": "/((?!api).*)",
