@@ -41,7 +41,11 @@ export default function AuthPage({ onLogin }) {
         onLogin(response.data);
       }
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Something went wrong");
+      if (!error.response) {
+        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      } else {
+        toast.error(error.response?.data?.detail || "Something went wrong");
+      }
     } finally {
       setLoading(false);
     }

@@ -8,8 +8,24 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
-export const API = `${BACKEND_URL.replace(/\/$/, "")}/api`;
+const resolveBackendUrl = () => {
+  if (process.env.REACT_APP_BACKEND_URL) {
+    return process.env.REACT_APP_BACKEND_URL.replace(/\/$/, "");
+  }
+
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1") {
+      return "http://localhost:8000";
+    }
+    return window.location.origin.replace(/\/$/, "");
+  }
+
+  return "http://localhost:8000";
+};
+
+const BACKEND_URL = resolveBackendUrl();
+export const API = `${BACKEND_URL}/api`;
 
 function App() {
   const [user, setUser] = useState(null);
