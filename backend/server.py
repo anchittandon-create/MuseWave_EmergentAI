@@ -8,6 +8,8 @@ Premium Demo Mode with:
 """
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -651,3 +653,32 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+# ==================== Static Frontend Serving ====================
+# Serve React frontend build files
+
+FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
+
+# Mount static files if build directory exists
+if FRONTEND_BUILD_DIR.exists():
+    app.mount("/static", StaticFiles(directory=FRONTEND_BUILD_DIR / "static"), name="static")
+
+# Catch-all route: serve index.html for all non-API routes
+# This allows React Router to handle routing
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """
+    Serve the React app for all routes except /api.
+    This enables client-side routing with React Router.
+    """
+    # Don't serve React app for API routes
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    
+    # Check if index.html exists
+    index_file = FRONTEND_BUILD_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    
+    # If no build directory, return API info
+    return {"message": "Muzify API - AI Music Creation", "note": "Frontend not built yet"}
