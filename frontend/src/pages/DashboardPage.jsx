@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "../components/ui/button";
-import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock } from "lucide-react";
+import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock, Loader2, Film } from "lucide-react";
 import axios from "axios";
 import { API } from "../App";
+import { toast } from "sonner";
 
 export default function DashboardPage({ user }) {
   const [filter, setFilter] = useState("all");
@@ -11,6 +12,8 @@ export default function DashboardPage({ user }) {
   const [playingTrack, setPlayingTrack] = useState(null);
   const [audioRef, setAudioRef] = useState(null);
   const [expandedAlbum, setExpandedAlbum] = useState(null);
+  const [generatingVideo, setGeneratingVideo] = useState({});
+  const [downloadingAlbum, setDownloadingAlbum] = useState({});
 
   useEffect(() => {
     fetchDashboard();
@@ -45,6 +48,63 @@ export default function DashboardPage({ user }) {
   const formatDate = (dateStr) => new Date(dateStr).toLocaleDateString("en-US", {
     month: "short", day: "numeric", year: "numeric"
   });
+
+  const downloadAlbum = async (albumId, albumTitle) => {
+    try {
+      setDownloadingAlbum((prev) => ({ ...prev, [albumId]: true }));
+      const response = await axios.get(`${API}/albums/${albumId}/download?user_id=${user.id}`, {
+        responseType: "blob",
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `${albumTitle}.zip`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      toast.success("Album downloaded successfully!");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to download album");
+      console.error("Download error:", error);
+    } finally {
+      setDownloadingAlbum((prev) => ({ ...prev, [albumId]: false }));
+    }
+  };
+
+  const generateAlbumVideos = async (albumId) => {
+    try {
+      setGeneratingVideo((prev) => ({ ...prev, [albumId]: true }));
+      const response = await axios.post(`${API}/albums/${albumId}/generate-videos?user_id=${user.id}`);
+      
+      // Refresh data to show video URLs
+      await fetchDashboard();
+      
+      toast.success(`Generated videos for ${response.data.total_videos_generated} songs!`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to generate videos");
+      console.error("Video generation error:", error);
+    } finally {
+      setGeneratingVideo((prev) => ({ ...prev, [albumId]: false }));
+    }
+  };
+
+  const generateSongVideo = async (songId) => {
+    try {
+      setGeneratingVideo((prev) => ({ ...prev, [songId]: true }));
+      const response = await axios.post(`${API}/songs/${songId}/generate-video?user_id=${user.id}`);
+      
+      // Refresh data to show video URL
+      await fetchDashboard();
+      
+      toast.success("Video generated successfully!");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to generate video");
+      console.error("Video generation error:", error);
+    } finally {
+      setGeneratingVideo((prev) => ({ ...prev, [songId]: false }));
+    }
+  };
 
   const totalSongs = data.songs.length;
   const totalAlbums = data.albums.length;
@@ -173,6 +233,7 @@ export default function DashboardPage({ user }) {
                   {/* Info */}
                   <div className="p-5">
                     <h3 className="font-semibold truncate mb-1">{song.title}</h3>
+                    {song.lyrics && <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{song.lyrics}</p>}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
                       <Calendar className="w-3 h-3" />
                       {formatDate(song.created_at)}
@@ -182,15 +243,32 @@ export default function DashboardPage({ user }) {
                         <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
                       ))}
                     </div>
-                    <a
-                      href={song.audio_url}
-                      download
-                      className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-secondary hover:bg-secondary/80 transition-colors text-sm font-medium"
-                      data-testid={`download-song-${song.id}`}
-                    >
-                      <Download className="w-4 h-4" />
-                      Download
-                    </a>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="flex-1 gap-2 h-10"
+                        onClick={() => generateSongVideo(song.id)}
+                        disabled={generatingVideo[song.id]}
+                        data-testid={`generate-video-song-${song.id}`}
+                      >
+                        {generatingVideo[song.id] ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Film className="w-4 h-4" />
+                        )}
+                        {generatingVideo[song.id] ? "Creating..." : "Video"}
+                      </Button>
+                      <a
+                        href={song.audio_url}
+                        download
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-secondary hover:bg-secondary/80 transition-colors text-sm font-medium"
+                        data-testid={`download-song-${song.id}`}
+                      >
+                        <Download className="w-4 h-4" />
+                        Download
+                      </a>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -215,27 +293,63 @@ export default function DashboardPage({ user }) {
                   data-testid={`album-card-${album.id}`}
                 >
                   {/* Header */}
-                  <button
-                    onClick={() => setExpandedAlbum(expandedAlbum === album.id ? null : album.id)}
-                    className="w-full p-5 flex items-center gap-5 hover:bg-white/[0.02] transition-colors"
-                    data-testid={`expand-album-${album.id}`}
-                  >
-                    <img src={album.cover_art_url} alt={album.title} className="w-20 h-20 rounded-xl object-cover shadow-lg" />
-                    <div className="flex-1 text-left">
-                      <h3 className="font-semibold text-lg">{album.title}</h3>
-                      <p className="text-sm text-muted-foreground">
-                        {album.songs?.length || 0} tracks • {formatDate(album.created_at)}
-                      </p>
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {album.genres?.slice(0, 3).map((g) => (
-                          <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
-                        ))}
+                  <div className="p-5">
+                    <button
+                      onClick={() => setExpandedAlbum(expandedAlbum === album.id ? null : album.id)}
+                      className="w-full flex items-center gap-5 hover:opacity-80 transition-opacity text-left"
+                      data-testid={`expand-album-${album.id}`}
+                    >
+                      <img src={album.cover_art_url} alt={album.title} className="w-20 h-20 rounded-xl object-cover shadow-lg flex-shrink-0" />
+                      <div className="flex-1 text-left">
+                        <h3 className="font-semibold text-lg">{album.title}</h3>
+                        <p className="text-sm text-muted-foreground">
+                          {album.songs?.length || 0} tracks • {formatDate(album.created_at)}
+                        </p>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {album.genres?.slice(0, 3).map((g) => (
+                            <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
+                          ))}
+                        </div>
                       </div>
+                      <div className={`text-muted-foreground transition-transform ${expandedAlbum === album.id ? "rotate-180" : ""}`}>
+                        ▼
+                      </div>
+                    </button>
+
+                    {/* Action Buttons */}
+                    <div className="flex gap-2 mt-4">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="flex-1 gap-2"
+                        onClick={() => downloadAlbum(album.id, album.title)}
+                        disabled={downloadingAlbum[album.id]}
+                        data-testid={`download-album-${album.id}`}
+                      >
+                        {downloadingAlbum[album.id] ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                        {downloadingAlbum[album.id] ? "Downloading..." : "Download All"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="flex-1 gap-2"
+                        onClick={() => generateAlbumVideos(album.id)}
+                        disabled={generatingVideo[album.id]}
+                        data-testid={`generate-videos-album-${album.id}`}
+                      >
+                        {generatingVideo[album.id] ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Film className="w-4 h-4" />
+                        )}
+                        {generatingVideo[album.id] ? "Generating..." : "Generate Videos"}
+                      </Button>
                     </div>
-                    <div className={`text-muted-foreground transition-transform ${expandedAlbum === album.id ? "rotate-180" : ""}`}>
-                      ▼
-                    </div>
-                  </button>
+                  </div>
 
                   {/* Tracks */}
                   {expandedAlbum === album.id && (
@@ -248,19 +362,33 @@ export default function DashboardPage({ user }) {
                           <span className="w-8 text-center text-muted-foreground font-mono text-sm">{i + 1}</span>
                           <button
                             onClick={() => playTrack(track.audio_url, track.id)}
-                            className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center hover:bg-primary/20 transition-colors"
+                            className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center hover:bg-primary/20 transition-colors flex-shrink-0"
                             data-testid={`play-track-${track.id}`}
                           >
                             {playingTrack === track.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                           </button>
                           <div className="flex-1 min-w-0">
                             <p className="font-medium truncate">{track.title}</p>
+                            {track.lyrics && <p className="text-xs text-muted-foreground line-clamp-1">{track.lyrics}</p>}
                           </div>
-                          <span className="text-sm text-muted-foreground font-mono">{formatTime(track.duration_seconds)}</span>
+                          <span className="text-sm text-muted-foreground font-mono flex-shrink-0">{formatTime(track.duration_seconds)}</span>
+                          <button
+                            onClick={() => generateSongVideo(track.id)}
+                            className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
+                            title="Generate video"
+                            disabled={generatingVideo[track.id]}
+                            data-testid={`generate-video-track-${track.id}`}
+                          >
+                            {generatingVideo[track.id] ? (
+                              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                            ) : (
+                              <Film className="w-4 h-4 text-muted-foreground hover:text-primary" />
+                            )}
+                          </button>
                           <a
                             href={track.audio_url}
                             download
-                            className="p-2 rounded-lg hover:bg-white/5 transition-colors"
+                            className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
                             data-testid={`download-track-${track.id}`}
                           >
                             <Download className="w-4 h-4 text-muted-foreground" />

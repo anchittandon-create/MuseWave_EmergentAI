@@ -14,6 +14,7 @@ export const API = `${BACKEND_URL}/api`;
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     const savedUser = localStorage.getItem("muzify_user");
@@ -61,8 +62,15 @@ function App() {
     <div className="noise-bg">
       <BrowserRouter>
         <div className="flex min-h-screen">
-          <Sidebar user={user} onLogout={handleLogout} />
-          <main className="flex-1 ml-64 min-h-screen">
+          <Sidebar 
+            user={user} 
+            onLogout={handleLogout} 
+            isCollapsed={sidebarCollapsed}
+            onCollapsedChange={setSidebarCollapsed}
+          />
+          <main className={`flex-1 min-h-screen transition-all duration-300 ${
+            sidebarCollapsed ? "ml-20" : "ml-64"
+          }`}>
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/create" element={<CreateMusicPage user={user} />} />

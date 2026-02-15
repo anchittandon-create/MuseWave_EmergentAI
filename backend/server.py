@@ -9,7 +9,7 @@ Premium Demo Mode with:
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 import random
 import hashlib
+import zipfile
+import io
+import requests
+from PIL import Image, ImageDraw, ImageFont
+import json
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -607,6 +612,242 @@ async def get_dashboard(user_id: str):
         for album in albums:
             album['songs'] = songs_by_album.get(album['id'], [])
     return {"songs": songs, "albums": albums}
+
+# ==================== Video Generation ====================
+
+def generate_video_thumbnail(song_data: dict) -> str:
+    """Generate a video thumbnail/poster for the song based on its metadata"""
+    try:
+        # Create a 1280x720 image for video thumbnail
+        width, height = 1280, 720
+        img = Image.new('RGB', (width, height), color=(20, 20, 40))
+        draw = ImageDraw.Draw(img)
+        
+        # Add a gradient effect with rectangles
+        for i in range(height):
+            color_val = int(20 + (i / height) * 60)
+            draw.line([(0, i), (width, i)], fill=(color_val, color_val//2, color_val + 40))
+        
+        # Add geometric shapes based on genre
+        genres = song_data.get('genres', [])
+        if genres:
+            # Draw accent circles/shapes based on genre type
+            accent_color = (100, 150, 255) if 'Electronic' in genres else (200, 100, 255)
+            for x in range(100, width, 200):
+                draw.ellipse([x-50, 200-50, x+50, 200+50], outline=accent_color, width=3)
+        
+        # Add text
+        try:
+            # Try to use a large font, fall back to default if not available
+            title_text = song_data.get('title', 'AI Music')[:30]
+            draw.text((width//2, height//2 - 40), title_text, fill=(255, 255, 255), anchor="mm")
+            
+            prompt_text = song_data.get('music_prompt', '')[:50]
+            draw.text((width//2, height//2 + 40), prompt_text, fill=(200, 200, 200), anchor="mm")
+        except:
+            pass
+        
+        # Convert to bytes
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='JPEG')
+        img_byte_arr.seek(0)
+        return f"data:image/jpeg;base64,{img_byte_arr.read().hex()}"
+    except Exception as e:
+        logger.error(f"Error generating video thumbnail: {e}")
+        return None
+
+# ==================== Download Routes ====================
+
+@api_router.get("/albums/{album_id}/download")
+async def download_album(album_id: str, user_id: str):
+    """Download all songs from an album as a ZIP file"""
+    try:
+        # Verify album exists and belongs to user
+        album = await db.albums.find_one({"id": album_id, "user_id": user_id})
+        if not album:
+            raise HTTPException(status_code=404, detail="Album not found")
+        
+        # Get all songs in the album
+        songs = await db.songs.find({"album_id": album_id}, {"_id": 0}).to_list(100)
+        if not songs:
+            raise HTTPException(status_code=404, detail="No songs in album")
+        
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Create album metadata file
+            album_info = {
+                "title": album.get('title', 'Untitled Album'),
+                "prompt": album.get('music_prompt', ''),
+                "genres": album.get('genres', []),
+                "created_at": album.get('created_at', ''),
+                "songs": []
+            }
+            
+            # Add each song to ZIP
+            for idx, song in enumerate(songs, 1):
+                try:
+                    # Download audio file
+                    audio_url = song.get('audio_url')
+                    if audio_url:
+                        response = requests.get(audio_url, timeout=10)
+                        if response.status_code == 200:
+                            file_extension = audio_url.split('.')[-1].split('?')[0] or 'mp3'
+                            filename = f"{idx:02d}__{song.get('title', f'Track {idx}')}.{file_extension}"
+                            zip_file.writestr(filename, response.content)
+                            
+                            # Add to metadata
+                            album_info["songs"].append({
+                                "title": song.get('title', ''),
+                                "duration": song.get('duration_seconds', 0),
+                                "lyrics": song.get('lyrics', ''),
+                                "file": filename
+                            })
+                except Exception as e:
+                    logger.error(f"Error downloading song {song.get('id')}: {e}")
+            
+            # Add metadata JSON file
+            zip_file.writestr("album_info.json", json.dumps(album_info, indent=2))
+        
+        zip_buffer.seek(0)
+        
+        return StreamingResponse(
+            iter([zip_buffer.getvalue()]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{album.get("title", "album")}.zip"'}
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating album ZIP: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create download")
+
+@api_router.get("/songs/{song_id}/download")
+async def download_song(song_id: str, user_id: str):
+    """Download a single song"""
+    try:
+        # Verify song exists and belongs to user
+        song = await db.songs.find_one({"id": song_id, "user_id": user_id})
+        if not song:
+            raise HTTPException(status_code=404, detail="Song not found")
+        
+        audio_url = song.get('audio_url')
+        if not audio_url:
+            raise HTTPException(status_code=404, detail="Audio not found")
+        
+        # Download audio file
+        response = requests.get(audio_url, timeout=10)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to download audio")
+        
+        file_extension = audio_url.split('.')[-1].split('?')[0] or 'mp3'
+        filename = f"{song.get('title', 'song')}.{file_extension}"
+        
+        return StreamingResponse(
+            iter([response.content]),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading song: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download song")
+
+# ==================== Video Generation Route ====================
+
+@api_router.post("/songs/{song_id}/generate-video")
+async def generate_song_video(song_id: str, user_id: str):
+    """Generate a video for a song based on its style and metadata"""
+    try:
+        # Get song
+        song = await db.songs.find_one({"id": song_id, "user_id": user_id})
+        if not song:
+            raise HTTPException(status_code=404, detail="Song not found")
+        
+        # Generate video thumbnail/poster
+        video_thumbnail = generate_video_thumbnail(song)
+        
+        # Create a simulated video URL (in production, this would call Sora API)
+        video_url = f"data:video/mp4;base64,{random.randbytes(100).hex()}"
+        
+        # Update song with video URL
+        await db.songs.update_one(
+            {"id": song_id},
+            {
+                "$set": {
+                    "video_url": video_url,
+                    "video_thumbnail": video_thumbnail,
+                    "generate_video": True,
+                    "video_generated_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        )
+        
+        return {
+            "id": song_id,
+            "video_url": video_url,
+            "video_thumbnail": video_thumbnail,
+            "status": "generated"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating video: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate video")
+
+@api_router.post("/albums/{album_id}/generate-videos")
+async def generate_album_videos(album_id: str, user_id: str):
+    """Generate videos for all songs in an album"""
+    try:
+        # Verify album exists and belongs to user
+        album = await db.albums.find_one({"id": album_id, "user_id": user_id})
+        if not album:
+            raise HTTPException(status_code=404, detail="Album not found")
+        
+        # Get all songs in album
+        songs = await db.songs.find({"album_id": album_id}, {"_id": 0}).to_list(100)
+        
+        generated_videos = []
+        for song in songs:
+            try:
+                video_thumbnail = generate_video_thumbnail(song)
+                video_url = f"data:video/mp4;base64,{random.randbytes(100).hex()}"
+                
+                await db.songs.update_one(
+                    {"id": song["id"]},
+                    {
+                        "$set": {
+                            "video_url": video_url,
+                            "video_thumbnail": video_thumbnail,
+                            "generate_video": True,
+                            "video_generated_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                )
+                
+                generated_videos.append({
+                    "song_id": song["id"],
+                    "title": song.get("title", ""),
+                    "video_generated": True
+                })
+            except Exception as e:
+                logger.error(f"Error generating video for song {song.get('id')}: {e}")
+        
+        return {
+            "album_id": album_id,
+            "total_videos_generated": len(generated_videos),
+            "songs": generated_videos
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating album videos: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate videos")
 
 # ==================== Knowledge Bases ====================
 
