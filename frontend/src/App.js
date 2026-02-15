@@ -8,7 +8,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://muzify-1.preview.emergentagent.com";
 export const API = `${BACKEND_URL}/api`;
 
 function App() {
