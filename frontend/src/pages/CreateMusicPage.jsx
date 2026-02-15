@@ -26,6 +26,8 @@ export default function CreateMusicPage({ user }) {
   const [languageSearch, setLanguageSearch] = useState("");
   const [durationInput, setDurationInput] = useState("25s");
   const [showAllGenres, setShowAllGenres] = useState(false);
+  const [aiSuggestedFields, setAiSuggestedFields] = useState(new Set());
+  const [lastSuggestion, setLastSuggestion] = useState({});
 
   const [formData, setFormData] = useState({
     title: "",
@@ -183,6 +185,12 @@ export default function CreateMusicPage({ user }) {
     const trimmed = (suggestion || "").trim();
     if (!trimmed) return;
 
+    // Track that this field received an AI suggestion
+    const newSuggestedFields = new Set(aiSuggestedFields);
+    newSuggestedFields.add(field);
+    setAiSuggestedFields(newSuggestedFields);
+    setLastSuggestion({ ...lastSuggestion, [field]: trimmed });
+
     const updates = {
       title: { title: suggestion },
       music_prompt: { musicPrompt: suggestion },
@@ -216,6 +224,13 @@ export default function CreateMusicPage({ user }) {
         setFormData((prev) => ({ ...prev, vocalLanguages: validLangs }));
       } else if (suggestion.toLowerCase().includes("instrumental")) {
         setFormData((prev) => ({ ...prev, vocalLanguages: ["Instrumental"] }));
+      }
+    } else if (field === "duration") {
+      // Parse duration suggestion (could be "45s", "2m30s", etc.)
+      const parsed = parseDurationInput(suggestion);
+      if (parsed !== null && parsed >= 10) {
+        setDurationInput(formatDuration(parsed));
+        setFormData((prev) => ({ ...prev, durationSeconds: parsed }));
       }
     }
   };
@@ -270,12 +285,26 @@ export default function CreateMusicPage({ user }) {
     setPlayingTrack(trackId);
   }, [audioRef, playingTrack]);
 
+  const AISuggestIndicator = ({ field }) => {
+    if (!aiSuggestedFields.has(field)) return null;
+    return (
+      <div className="absolute -top-2 -right-2 flex items-center gap-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white px-2 py-1 rounded-full text-xs font-semibold animate-pulse">
+        <Sparkles className="w-3 h-3" />
+        AI Suggested
+      </div>
+    );
+  };
+
   const SuggestButton = ({ field }) => (
     <Button
       type="button"
       variant="ghost"
       size="sm"
-      className="h-7 px-2 text-xs text-primary hover:text-primary hover:bg-primary/10 gap-1"
+      className={`h-7 px-2 text-xs font-semibold transition-all gap-1 ${
+        aiSuggestedFields.has(field)
+          ? "text-purple-500 hover:text-purple-600 hover:bg-purple-500/10 border border-purple-500/30"
+          : "text-primary hover:text-primary hover:bg-primary/10"
+      }`}
       onClick={() => handleAISuggest(field)}
       disabled={suggestingField === field || loading}
       data-testid={`suggest-${field}-btn`}
@@ -285,7 +314,7 @@ export default function CreateMusicPage({ user }) {
       ) : (
         <Sparkles className="w-3 h-3" />
       )}
-      AI Suggest
+      {aiSuggestedFields.has(field) ? "Suggested" : "Suggest"}
     </Button>
   );
 
@@ -385,9 +414,41 @@ export default function CreateMusicPage({ user }) {
           {/* Genres */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <Label className="text-xs uppercase tracking-widest text-muted-foreground">Genres</Label>
+              <div className="flex items-center gap-2">
+                <Label className="text-xs uppercase tracking-widest text-muted-foreground">Genres</Label>
+                {aiSuggestedFields.has("genres") && (
+                  <Badge variant="outline" className="border-purple-500/50 bg-purple-500/10 text-purple-400 text-xs gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    AI Selected
+                  </Badge>
+                )}
+              </div>
               <SuggestButton field="genres" />
             </div>
+            
+            {/* Selected genres - highlighted if AI suggested */}
+            {formData.selectedGenres.length > 0 && (
+              <div className={`flex flex-wrap gap-2 p-3 rounded-lg border transition-all ${
+                aiSuggestedFields.has("genres")
+                  ? "bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-purple-500/40"
+                  : "bg-primary/5 border-primary/20"
+              }`}>
+                {formData.selectedGenres.map((genre) => (
+                  <Badge
+                    key={genre}
+                    className={`cursor-pointer pr-1 transition-all ${
+                      aiSuggestedFields.has("genres")
+                        ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600"
+                        : "bg-primary text-primary-foreground hover:bg-primary/80"
+                    }`}
+                    onClick={() => toggleGenre(genre)}
+                  >
+                    {genre}
+                    <X className="w-3 h-3 ml-1" />
+                  </Badge>
+                ))}
+              </div>
+            )}
             
             {/* Search */}
             <div className="relative">
@@ -409,23 +470,7 @@ export default function CreateMusicPage({ user }) {
               )}
             </div>
 
-            {/* Selected genres */}
-            {formData.selectedGenres.length > 0 && (
-              <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-primary/5 border border-primary/20">
-                {formData.selectedGenres.map((genre) => (
-                  <Badge
-                    key={genre}
-                    className="bg-primary text-primary-foreground cursor-pointer hover:bg-primary/80 pr-1"
-                    onClick={() => toggleGenre(genre)}
-                  >
-                    {genre}
-                    <X className="w-3 h-3 ml-1" />
-                  </Badge>
-                ))}
-              </div>
-            )}
-
-            {/* Genre grid */}
+            {/* Genre list */}
             <div className="flex flex-wrap gap-2" data-testid="genres-selection">
               {displayedGenres.map((genre) => (
                 <Badge
@@ -461,13 +506,25 @@ export default function CreateMusicPage({ user }) {
           {mode === "single" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-4">
-                <Label className="text-xs uppercase tracking-widest text-muted-foreground">Duration</Label>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Duration</Label>
+                  {aiSuggestedFields.has("duration") && (
+                    <Badge variant="outline" className="border-purple-500/50 bg-purple-500/10 text-purple-400 text-xs gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      AI Suggested
+                    </Badge>
+                  )}
+                </div>
                 <Input
                   value={durationInput}
                   onChange={handleDurationInputChange}
                   onBlur={handleDurationInputBlur}
                   onFocus={(e) => e.target.select()}
-                  className="w-32 h-11 font-mono text-center bg-secondary/50"
+                  className={`w-32 h-11 font-mono text-center transition-all ${
+                    aiSuggestedFields.has("duration")
+                      ? "bg-gradient-to-r from-purple-500/20 to-pink-500/20 border border-purple-500/40 text-purple-300"
+                      : "bg-secondary/50"
+                  }`}
                   placeholder="e.g. 1:30 or 90 or 1h 5m"
                   data-testid="duration-input"
                 />
@@ -495,9 +552,42 @@ export default function CreateMusicPage({ user }) {
           {/* Vocal Languages */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <Label className="text-xs uppercase tracking-widest text-muted-foreground">Vocal Language</Label>
+              <div className="flex items-center gap-2">
+                <Label className="text-xs uppercase tracking-widest text-muted-foreground">Vocal Language</Label>
+                {aiSuggestedFields.has("vocal_languages") && (
+                  <Badge variant="outline" className="border-purple-500/50 bg-purple-500/10 text-purple-400 text-xs gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    AI Selected
+                  </Badge>
+                )}
+              </div>
               <SuggestButton field="vocal_languages" />
             </div>
+            
+            {/* Selected languages - highlighted if AI suggested */}
+            {formData.vocalLanguages.length > 0 && (
+              <div className={`flex flex-wrap gap-2 p-3 rounded-lg border transition-all ${
+                aiSuggestedFields.has("vocal_languages")
+                  ? "bg-gradient-to-r from-purple-500/10 to-pink-500/10 border-purple-500/40"
+                  : "bg-primary/5 border-primary/20"
+              }`}>
+                {formData.vocalLanguages.map((lang) => (
+                  <Badge
+                    key={lang}
+                    className={`cursor-pointer pr-1 transition-all ${
+                      aiSuggestedFields.has("vocal_languages")
+                        ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600"
+                        : "bg-primary text-primary-foreground hover:bg-primary/80"
+                    }`}
+                    onClick={() => toggleLanguage(lang)}
+                  >
+                    {lang}
+                    <X className="w-3 h-3 ml-1" />
+                  </Badge>
+                ))}
+              </div>
+            )}
+            
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -516,20 +606,8 @@ export default function CreateMusicPage({ user }) {
                 </button>
               )}
             </div>
-            {formData.vocalLanguages.length > 0 && (
-              <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-primary/5 border border-primary/20">
-                {formData.vocalLanguages.map((lang) => (
-                  <Badge
-                    key={lang}
-                    className="bg-primary text-primary-foreground cursor-pointer hover:bg-primary/80 pr-1"
-                    onClick={() => toggleLanguage(lang)}
-                  >
-                    {lang}
-                    <X className="w-3 h-3 ml-1" />
-                  </Badge>
-                ))}
-              </div>
-            )}
+
+            {/* Language grid */}
             <div className="flex flex-wrap gap-2" data-testid="languages-selection">
               {(languageSearch ? languages.filter((l) => l.toLowerCase().includes(languageSearch.toLowerCase())) : languages).map((lang) => (
                 <Badge
