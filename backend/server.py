@@ -37,7 +37,10 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'musewave_db')]
+PRIMARY_DB_NAME = os.environ.get('DB_NAME', 'muzify_db')
+LEGACY_DB_NAME = os.environ.get('LEGACY_DB_NAME', 'musewave_db')
+db = client[PRIMARY_DB_NAME]
+legacy_db = client[LEGACY_DB_NAME] if LEGACY_DB_NAME != PRIMARY_DB_NAME else None
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -1005,6 +1008,8 @@ CREATIVITY RULES:
 @api_router.post("/auth/signup", response_model=UserResponse)
 async def signup(user_data: UserCreate):
     existing = await db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
+    if not existing and legacy_db:
+        existing = await legacy_db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Account with this mobile number already exists")
     
@@ -1018,6 +1023,8 @@ async def signup(user_data: UserCreate):
 @api_router.post("/auth/login", response_model=UserResponse)
 async def login(login_data: UserLogin):
     user = await db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
+    if not user and legacy_db:
+        user = await legacy_db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="No account found. Please sign up first.")
     
@@ -1757,6 +1764,8 @@ async def api_health():
         "status": "healthy",
         "version": "3.0",
         "mode": "hybrid",
+        "db_name": PRIMARY_DB_NAME,
+        "legacy_db_name": LEGACY_DB_NAME if legacy_db else None,
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": "configured" if MUSICGEN_API_URL else "fallback_curated_library",
         "video_generation": "configured" if REPLICATE_API_TOKEN else "fallback_sample_video",
