@@ -180,7 +180,11 @@ export default function CreateMusicPage({ user }) {
       }
       toast.success("AI suggestion applied!", { duration: 2000 });
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Failed to get suggestion");
+      if (!error.response) {
+        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      } else {
+        toast.error(error.response?.data?.detail || "Failed to get suggestion");
+      }
     } finally {
       setSuggestingField(null);
     }
@@ -476,7 +480,11 @@ export default function CreateMusicPage({ user }) {
       setResult({ type: mode === "single" ? "song" : "album", data: response.data });
       toast.success(mode === "single" ? "Track created!" : `Album with ${response.data.songs?.length} tracks created!`);
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Creation failed");
+      if (!error.response) {
+        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      } else {
+        toast.error(error.response?.data?.detail || "Creation failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -501,7 +509,11 @@ export default function CreateMusicPage({ user }) {
       const response = await axios.post(`${API}/albums/${albumId}/generate-videos?user_id=${user.id}`);
       toast.success(response.data?.message || "Video generation started");
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Failed to generate videos");
+      if (!error.response) {
+        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      } else {
+        toast.error(error.response?.data?.detail || "Failed to generate videos");
+      }
     } finally {
       setAlbumVideoLoading(false);
     }
@@ -1389,7 +1401,11 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
         toast.success(response.data.message || "Video generation started");
       }
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Failed to generate video");
+      if (!error.response) {
+        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      } else {
+        toast.error(error.response?.data?.detail || "Failed to generate video");
+      }
     } finally {
       setGeneratingVideo(false);
     }
