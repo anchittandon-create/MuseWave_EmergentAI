@@ -25,6 +25,7 @@ import random
 import hashlib
 import zipfile
 import io
+import base64
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import json
@@ -726,49 +727,18 @@ async def get_dashboard(user_id: str):
 
 # ==================== Video Generation Utilities ====================
 
+# Reliable sample video URL for placeholder - short clip that plays in all browsers
+# In production, replace with Sora API or similar video generation
+_SAMPLE_VIDEO_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
+
+
 def generate_video_placeholder(song_data: dict) -> str:
-    """Generate a valid MP4 video placeholder based on song metadata
-    
-    Creates a minimal but valid MP4 file that can be embedded as data URL.
-    In production, this would call Sora API or similar video generation service.
+    """Return a playable video URL for the song.
+
+    Uses a sample video URL as placeholder. In production, this would call
+    Sora API or similar to generate a custom video from song metadata.
     """
-    try:
-        # Create a simple video frame from the thumbnail
-        thumbnail_data = generate_video_thumbnail(song_data)
-        
-        # For MVP: Return the thumbnail as base64 for embedding
-        # In production: Call Sora API with song parameters like:
-        # - video_style from song_data.get('video_style')
-        # - lyrics from song_data.get('lyrics')
-        # - genres from song_data.get('genres')
-        # - music_prompt from song_data.get('music_prompt')
-        
-        # Create minimal valid MP4-like structure with extended metadata
-        video_metadata = {
-            "title": song_data.get('title', 'Generated Music Video'),
-            "description": song_data.get('music_prompt', ''),
-            "genres": song_data.get('genres', []),
-            "style": song_data.get('video_style', 'cinematic'),
-            "duration": song_data.get('duration_seconds', 30),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-        # Encode metadata as JSON and then to base64
-        metadata_json = json.dumps(video_metadata).encode('utf-8')
-        metadata_b64 = metadata_json.hex()
-        
-        # Create a pseudo-video blob: MP4 header + metadata + random frame data
-        # This creates a valid-looking base64 string that represents video data
-        mp4_header = bytes.fromhex('0000002066747970')  # Minimal MP4 ftyp box
-        frame_data = random.randbytes(4096)  # Simulate video frames
-        
-        video_blob = mp4_header + frame_data + metadata_json
-        return video_blob.hex()
-        
-    except Exception as e:
-        logger.error(f"Error generating video placeholder: {e}")
-        # Fallback: return empty valid base64
-        return "0000002066747970"
+    return _SAMPLE_VIDEO_URL
 
 def generate_video_thumbnail(song_data: dict) -> str:
     """Generate a video thumbnail/poster for the song based on its metadata"""
@@ -802,11 +772,12 @@ def generate_video_thumbnail(song_data: dict) -> str:
         except:
             pass
         
-        # Convert to bytes
+        # Convert to base64 for data URL (was incorrectly using .hex() before)
         img_byte_arr = io.BytesIO()
         img.save(img_byte_arr, format='JPEG')
         img_byte_arr.seek(0)
-        return f"data:image/jpeg;base64,{img_byte_arr.read().hex()}"
+        b64 = base64.b64encode(img_byte_arr.read()).decode('utf-8')
+        return f"data:image/jpeg;base64,{b64}"
     except Exception as e:
         logger.error(f"Error generating video thumbnail: {e}")
         return None
@@ -925,11 +896,8 @@ async def generate_song_video(song_id: str, user_id: str):
         # Generate video thumbnail/poster
         video_thumbnail = generate_video_thumbnail(song)
         
-        # Create a more realistic video URL using thumbnail or placeholder video
-        # In production, this would integrate with Sora API or similar
-        # For now, create a proper base64-encoded video placeholder
-        video_data = generate_video_placeholder(song)
-        video_url = f"data:video/mp4;base64,{video_data}"
+        # Get playable video URL (external sample or generated)
+        video_url = generate_video_placeholder(song)
         
         # Update song with video URL
         await db.songs.update_one(

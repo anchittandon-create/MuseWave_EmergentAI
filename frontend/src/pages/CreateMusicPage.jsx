@@ -23,6 +23,8 @@ export default function CreateMusicPage({ user }) {
   const [playingTrack, setPlayingTrack] = useState(null);
   const [audioRef, setAudioRef] = useState(null);
   const [genreSearch, setGenreSearch] = useState("");
+  const [languageSearch, setLanguageSearch] = useState("");
+  const [durationInput, setDurationInput] = useState("25s");
   const [showAllGenres, setShowAllGenres] = useState(false);
 
   const [formData, setFormData] = useState({
@@ -114,6 +116,46 @@ export default function CreateMusicPage({ user }) {
     }
   };
 
+  const parseDurationInput = (input) => {
+    const s = String(input).trim();
+    if (!s) return null;
+    const num = parseInt(s, 10);
+    if (!isNaN(num) && num >= 10) return Math.min(num, 72000);
+    const hMatch = s.match(/(\d+)\s*h/);
+    const mMatch = s.match(/(\d+)\s*m/);
+    const sMatch = s.match(/(\d+)\s*s/);
+    const colonMatch = s.match(/^(\d+):(\d+)(?::(\d+))?$/);
+    if (colonMatch) {
+      const [, a, b, c] = colonMatch;
+      let total;
+      if (c !== undefined) {
+        total = parseInt(a, 10) * 3600 + parseInt(b, 10) * 60 + parseInt(c, 10);
+      } else {
+        total = parseInt(a, 10) * 60 + parseInt(b, 10);
+      }
+      return total >= 10 ? Math.min(total, 72000) : null;
+    }
+    let total = 0;
+    if (hMatch) total += parseInt(hMatch[1], 10) * 3600;
+    if (mMatch) total += parseInt(mMatch[1], 10) * 60;
+    if (sMatch) total += parseInt(sMatch[1], 10);
+    if (total >= 10) return Math.min(total, 72000);
+    return null;
+  };
+
+  const handleDurationInputChange = (e) => {
+    const val = e.target.value;
+    setDurationInput(val);
+    const parsed = parseDurationInput(val);
+    if (parsed !== null) {
+      setFormData((prev) => ({ ...prev, durationSeconds: parsed }));
+    }
+  };
+
+  const handleDurationInputBlur = () => {
+    setDurationInput(formatDuration(formData.durationSeconds));
+  };
+
   const getFieldValue = (field) => {
     const mapping = {
       title: formData.title,
@@ -127,7 +169,20 @@ export default function CreateMusicPage({ user }) {
     return mapping[field] || "";
   };
 
+  const findBestMatch = (suggested, options) => {
+    const s = suggested.toLowerCase().trim();
+    const exact = options.find((o) => o.toLowerCase() === s);
+    if (exact) return exact;
+    const contains = options.find((o) => o.toLowerCase().includes(s) || s.includes(o.toLowerCase()));
+    if (contains) return contains;
+    const startsWith = options.find((o) => o.toLowerCase().startsWith(s) || s.startsWith(o.toLowerCase()));
+    return startsWith || null;
+  };
+
   const applySuggestion = (field, suggestion) => {
+    const trimmed = (suggestion || "").trim();
+    if (!trimmed) return;
+
     const updates = {
       title: { title: suggestion },
       music_prompt: { musicPrompt: suggestion },
@@ -137,27 +192,32 @@ export default function CreateMusicPage({ user }) {
     };
 
     if (updates[field]) {
-      setFormData({ ...formData, ...updates[field] });
+      setFormData((prev) => ({ ...prev, ...updates[field] }));
     } else if (field === "genres") {
-      const suggestedGenres = suggestion.split(",").map((g) => g.trim());
-      const validGenres = suggestedGenres.filter((g) =>
-        genres.some((kg) => kg.toLowerCase() === g.toLowerCase())
-      );
+      setGenreSearch(suggestion);
+      const suggestedGenres = suggestion.split(",").map((g) => g.trim()).filter(Boolean);
+      const validGenres = [];
+      for (const g of suggestedGenres) {
+        const match = findBestMatch(g, genres);
+        if (match && !validGenres.includes(match)) validGenres.push(match);
+      }
       if (validGenres.length > 0) {
-        setFormData({ ...formData, selectedGenres: validGenres });
+        setFormData((prev) => ({ ...prev, selectedGenres: validGenres }));
       }
     } else if (field === "vocal_languages") {
-      const suggestedLangs = suggestion.split(",").map((l) => l.trim());
-      const validLangs = suggestedLangs.filter((l) =>
-        languages.some((kl) => kl.toLowerCase() === l.toLowerCase())
-      );
+      setLanguageSearch(suggestion);
+      const suggestedLangs = suggestion.split(",").map((l) => l.trim()).filter(Boolean);
+      const validLangs = [];
+      for (const l of suggestedLangs) {
+        const match = findBestMatch(l, languages);
+        if (match && !validLangs.includes(match)) validLangs.push(match);
+      }
       if (validLangs.length > 0) {
-        setFormData({ ...formData, vocalLanguages: validLangs });
+        setFormData((prev) => ({ ...prev, vocalLanguages: validLangs }));
       } else if (suggestion.toLowerCase().includes("instrumental")) {
-        setFormData({ ...formData, vocalLanguages: ["Instrumental"] });
+        setFormData((prev) => ({ ...prev, vocalLanguages: ["Instrumental"] }));
       }
     }
-    toast.success("Suggestion applied!", { duration: 1000 });
   };
 
   const handleSubmit = async () => {
@@ -400,13 +460,25 @@ export default function CreateMusicPage({ user }) {
           {/* Duration - Only for single */}
           {mode === "single" && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-4">
                 <Label className="text-xs uppercase tracking-widest text-muted-foreground">Duration</Label>
-                <span className="font-mono text-lg font-medium">{formatDuration(formData.durationSeconds)}</span>
+                <Input
+                  value={durationInput}
+                  onChange={handleDurationInputChange}
+                  onBlur={handleDurationInputBlur}
+                  onFocus={(e) => e.target.select()}
+                  className="w-32 h-11 font-mono text-center bg-secondary/50"
+                  placeholder="e.g. 1:30 or 90 or 1h 5m"
+                  data-testid="duration-input"
+                />
               </div>
               <Slider
                 value={[formData.durationSeconds]}
-                onValueChange={(v) => setFormData({ ...formData, durationSeconds: v[0] })}
+                onValueChange={(v) => {
+                  const secs = v[0];
+                  setFormData((prev) => ({ ...prev, durationSeconds: secs }));
+                  setDurationInput(formatDuration(secs));
+                }}
                 max={72000}
                 min={10}
                 step={1}
@@ -426,8 +498,40 @@ export default function CreateMusicPage({ user }) {
               <Label className="text-xs uppercase tracking-widest text-muted-foreground">Vocal Language</Label>
               <SuggestButton field="vocal_languages" />
             </div>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search or view AI suggestion..."
+                value={languageSearch}
+                onChange={(e) => setLanguageSearch(e.target.value)}
+                className="pl-10 h-11 bg-secondary/50 border-0 rounded-lg"
+                data-testid="language-search"
+              />
+              {languageSearch && (
+                <button
+                  onClick={() => setLanguageSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2"
+                >
+                  <X className="w-4 h-4 text-muted-foreground hover:text-foreground" />
+                </button>
+              )}
+            </div>
+            {formData.vocalLanguages.length > 0 && (
+              <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-primary/5 border border-primary/20">
+                {formData.vocalLanguages.map((lang) => (
+                  <Badge
+                    key={lang}
+                    className="bg-primary text-primary-foreground cursor-pointer hover:bg-primary/80 pr-1"
+                    onClick={() => toggleLanguage(lang)}
+                  >
+                    {lang}
+                    <X className="w-3 h-3 ml-1" />
+                  </Badge>
+                ))}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2" data-testid="languages-selection">
-              {languages.map((lang) => (
+              {(languageSearch ? languages.filter((l) => l.toLowerCase().includes(languageSearch.toLowerCase())) : languages).map((lang) => (
                 <Badge
                   key={lang}
                   variant={formData.vocalLanguages.includes(lang) ? "default" : "outline"}

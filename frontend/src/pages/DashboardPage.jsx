@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "../components/ui/button";
-import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock, Loader2, Film } from "lucide-react";
+import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock, Loader2, Film, X } from "lucide-react";
 import axios from "axios";
 import { API } from "../App";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ export default function DashboardPage({ user }) {
   const [expandedAlbum, setExpandedAlbum] = useState(null);
   const [generatingVideo, setGeneratingVideo] = useState({});
   const [downloadingAlbum, setDownloadingAlbum] = useState({});
+  const [videoModal, setVideoModal] = useState(null);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -259,21 +260,34 @@ export default function DashboardPage({ user }) {
                       </div>
                     )}
                     <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="flex-1 gap-2 h-10"
-                        onClick={() => generateSongVideo(song.id)}
-                        disabled={generatingVideo[song.id]}
-                        data-testid={`generate-video-song-${song.id}`}
-                      >
-                        {generatingVideo[song.id] ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
+                      {song.video_url ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="flex-1 gap-2 h-10"
+                          onClick={() => setVideoModal({ url: song.video_url, title: song.title, thumbnail: song.video_thumbnail })}
+                          data-testid={`watch-video-song-${song.id}`}
+                        >
                           <Film className="w-4 h-4" />
-                        )}
-                        {generatingVideo[song.id] ? "Creating..." : "Video"}
-                      </Button>
+                          Watch Video
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="flex-1 gap-2 h-10"
+                          onClick={() => generateSongVideo(song.id)}
+                          disabled={generatingVideo[song.id]}
+                          data-testid={`generate-video-song-${song.id}`}
+                        >
+                          {generatingVideo[song.id] ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Film className="w-4 h-4" />
+                          )}
+                          {generatingVideo[song.id] ? "Creating..." : "Video"}
+                        </Button>
+                      )}
                       <a
                         href={song.audio_url}
                         download
@@ -387,19 +401,30 @@ export default function DashboardPage({ user }) {
                             {track.lyrics && <p className="text-xs text-muted-foreground line-clamp-1">{track.lyrics}</p>}
                           </div>
                           <span className="text-sm text-muted-foreground font-mono flex-shrink-0">{formatTime(track.duration_seconds)}</span>
-                          <button
-                            onClick={() => generateSongVideo(track.id)}
-                            className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
-                            title="Generate video"
-                            disabled={generatingVideo[track.id]}
-                            data-testid={`generate-video-track-${track.id}`}
-                          >
-                            {generatingVideo[track.id] ? (
-                              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-                            ) : (
-                              <Film className="w-4 h-4 text-muted-foreground hover:text-primary" />
-                            )}
-                          </button>
+                          {track.video_url ? (
+                            <button
+                              onClick={() => setVideoModal({ url: track.video_url, title: track.title, thumbnail: track.video_thumbnail })}
+                              className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
+                              title="Watch video"
+                              data-testid={`watch-video-track-${track.id}`}
+                            >
+                              <Film className="w-4 h-4 text-primary" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => generateSongVideo(track.id)}
+                              className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
+                              title="Generate video"
+                              disabled={generatingVideo[track.id]}
+                              data-testid={`generate-video-track-${track.id}`}
+                            >
+                              {generatingVideo[track.id] ? (
+                                <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                              ) : (
+                                <Film className="w-4 h-4 text-muted-foreground hover:text-primary" />
+                              )}
+                            </button>
+                          )}
                           <a
                             href={track.audio_url}
                             download
@@ -414,6 +439,36 @@ export default function DashboardPage({ user }) {
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Video Modal */}
+        {videoModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            onClick={() => setVideoModal(null)}
+          >
+            <div
+              className="relative max-w-4xl w-full bg-card rounded-2xl overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setVideoModal(null)}
+                className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="p-4 border-b border-white/5">
+                <h3 className="font-semibold truncate pr-12">{videoModal.title}</h3>
+              </div>
+              <video
+                src={videoModal.url}
+                poster={videoModal.thumbnail}
+                controls
+                autoPlay
+                className="w-full aspect-video bg-black"
+              />
             </div>
           </div>
         )}
