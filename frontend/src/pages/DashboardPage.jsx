@@ -81,7 +81,8 @@ export default function DashboardPage({ user }) {
       // Refresh data to show video URLs
       await fetchDashboard();
       
-      toast.success(`Generated videos for ${response.data.total_videos_generated} songs!`);
+      const msg = response.data?.message || `Generated videos for ${response.data.total_videos_generated} songs!`;
+      toast.success(msg, { duration: 5000 });
     } catch (error) {
       toast.error(error.response?.data?.detail || "Failed to generate videos");
       console.error("Video generation error:", error);
@@ -95,10 +96,9 @@ export default function DashboardPage({ user }) {
       setGeneratingVideo((prev) => ({ ...prev, [songId]: true }));
       const response = await axios.post(`${API}/songs/${songId}/generate-video?user_id=${user.id}`);
       
-      // Refresh data to show video URL
       await fetchDashboard();
-      
-      toast.success("Video generated successfully!");
+      const msg = response.data?.message || "Video generated successfully!";
+      toast.success(msg, response.data?.status === "processing" ? { duration: 5000 } : {});
     } catch (error) {
       toast.error(error.response?.data?.detail || "Failed to generate video");
       console.error("Video generation error:", error);
@@ -271,6 +271,11 @@ export default function DashboardPage({ user }) {
                           <Film className="w-4 h-4" />
                           Watch Video
                         </Button>
+                      ) : song.video_status === "processing" ? (
+                        <Button size="sm" variant="ghost" className="flex-1 gap-2 h-10" disabled>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Processing...
+                        </Button>
                       ) : (
                         <Button
                           size="sm"
@@ -409,6 +414,10 @@ export default function DashboardPage({ user }) {
                               data-testid={`watch-video-track-${track.id}`}
                             >
                               <Film className="w-4 h-4 text-primary" />
+                            </button>
+                          ) : track.video_status === "processing" ? (
+                            <button className="p-2 rounded-lg flex-shrink-0" title="Processing..." disabled>
+                              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
                             </button>
                           ) : (
                             <button

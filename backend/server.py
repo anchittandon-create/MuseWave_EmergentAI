@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 import os
 import logging
 from pathlib import Path
@@ -955,24 +956,17 @@ async def download_song(song_id: str, user_id: str):
         logger.error(f"Error downloading song: {e}")
         raise HTTPException(status_code=500, detail="Failed to download song")
 
-# ==================== Video Generation Route ====================
-
-@api_router.post("/songs/{song_id}/generate-video")
-async def generate_song_video(song_id: str, user_id: str):
-    """Generate a video for a song based on its style and metadata"""
+async def _run_video_generation_task(song_id: str, user_id: str):
+    """Background task: generate video via Replicate and update DB."""
     try:
-        # Get song
         song = await db.songs.find_one({"id": song_id, "user_id": user_id})
         if not song:
-            raise HTTPException(status_code=404, detail="Song not found")
-        
-        # Generate video thumbnail/poster
+            return
         video_thumbnail = generate_video_thumbnail(song)
-        
-        # Get playable video URL (external sample or generated)
-        video_url = generate_video_placeholder(song)
-        
-        # Update song with video URL
+        loop = asyncio.get_event_loop()
+        video_url = await loop.run_in_executor(None, lambda: _generate_video_via_replicate(song))
+        if not video_url:
+            video_url = _SAMPLE_VIDEO_URL
         await db.songs.update_one(
             {"id": song_id},
             {
@@ -985,65 +979,137 @@ async def generate_song_video(song_id: str, user_id: str):
                 }
             }
         )
-        
+        logger.info(f"Video generated for song {song_id}")
+    except Exception as e:
+        logger.error(f"Background video generation failed for {song_id}: {e}")
+        try:
+            song = await db.songs.find_one({"id": song_id, "user_id": user_id})
+            if song:
+                await db.songs.update_one(
+                    {"id": song_id},
+                    {
+                        "$set": {
+                            "video_url": _SAMPLE_VIDEO_URL,
+                            "video_thumbnail": generate_video_thumbnail(song),
+                            "video_status": "completed",
+                            "generate_video": True,
+                        }
+                    }
+                )
+        except Exception:
+            pass
+
+
+# ==================== Video Generation Route ====================
+
+@api_router.post("/songs/{song_id}/generate-video")
+async def generate_song_video(song_id: str, user_id: str, background_tasks: BackgroundTasks):
+    """Generate a video for a song using AI (Replicate) or fallback to sample."""
+    try:
+        song = await db.songs.find_one({"id": song_id, "user_id": user_id})
+        if not song:
+            raise HTTPException(status_code=404, detail="Song not found")
+
+        video_thumbnail = generate_video_thumbnail(song)
+
+        if REPLICATE_API_TOKEN:
+            await db.songs.update_one(
+                {"id": song_id},
+                {"$set": {"video_status": "processing", "video_thumbnail": video_thumbnail}}
+            )
+            background_tasks.add_task(_run_video_generation_task, song_id, user_id)
+            return {
+                "id": song_id,
+                "status": "processing",
+                "video_thumbnail": video_thumbnail,
+                "message": "AI video generation started. This may take 1-2 minutes. Refresh the page to see your video.",
+            }
+
+        video_url = _SAMPLE_VIDEO_URL
+        await db.songs.update_one(
+            {"id": song_id},
+            {
+                "$set": {
+                    "video_url": video_url,
+                    "video_thumbnail": video_thumbnail,
+                    "generate_video": True,
+                    "video_generated_at": datetime.now(timezone.utc).isoformat(),
+                    "video_status": "completed",
+                }
+            },
+        )
         return {
             "id": song_id,
             "video_url": video_url,
             "video_thumbnail": video_thumbnail,
             "status": "generated",
-            "message": f"Video generated for '{song.get('title', 'Song')}' based on genres: {', '.join(song.get('genres', [])[:2])}"
+            "message": f"Video ready for '{song.get('title', 'Song')}'",
         }
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error generating video: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate video")
 
+@api_router.get("/songs/{song_id}/video-status")
+async def get_video_status(song_id: str, user_id: str):
+    """Get video generation status for a song."""
+    song = await db.songs.find_one({"id": song_id, "user_id": user_id}, {"_id": 0})
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+    return {
+        "id": song_id,
+        "video_status": song.get("video_status", "pending"),
+        "video_url": song.get("video_url"),
+        "video_thumbnail": song.get("video_thumbnail"),
+    }
+
+
 @api_router.post("/albums/{album_id}/generate-videos")
-async def generate_album_videos(album_id: str, user_id: str):
-    """Generate videos for all songs in an album"""
+async def generate_album_videos(album_id: str, user_id: str, background_tasks: BackgroundTasks):
+    """Generate videos for all songs in an album using AI or sample fallback."""
     try:
-        # Verify album exists and belongs to user
         album = await db.albums.find_one({"id": album_id, "user_id": user_id})
         if not album:
             raise HTTPException(status_code=404, detail="Album not found")
-        
-        # Get all songs in album
+
         songs = await db.songs.find({"album_id": album_id}, {"_id": 0}).to_list(100)
-        
-        generated_videos = []
+        generated = []
+
         for song in songs:
             try:
                 video_thumbnail = generate_video_thumbnail(song)
-                video_url = f"data:video/mp4;base64,{random.randbytes(100).hex()}"
-                
-                await db.songs.update_one(
-                    {"id": song["id"]},
-                    {
-                        "$set": {
-                            "video_url": video_url,
-                            "video_thumbnail": video_thumbnail,
-                            "generate_video": True,
-                            "video_generated_at": datetime.now(timezone.utc).isoformat()
-                        }
-                    }
-                )
-                
-                generated_videos.append({
-                    "song_id": song["id"],
-                    "title": song.get("title", ""),
-                    "video_generated": True
-                })
+                if REPLICATE_API_TOKEN:
+                    await db.songs.update_one(
+                        {"id": song["id"]},
+                        {"$set": {"video_status": "processing", "video_thumbnail": video_thumbnail}},
+                    )
+                    background_tasks.add_task(_run_video_generation_task, song["id"], user_id)
+                    generated.append({"song_id": song["id"], "title": song.get("title", ""), "status": "processing"})
+                else:
+                    await db.songs.update_one(
+                        {"id": song["id"]},
+                        {
+                            "$set": {
+                                "video_url": _SAMPLE_VIDEO_URL,
+                                "video_thumbnail": video_thumbnail,
+                                "generate_video": True,
+                                "video_generated_at": datetime.now(timezone.utc).isoformat(),
+                                "video_status": "completed",
+                            }
+                        },
+                    )
+                    generated.append({"song_id": song["id"], "title": song.get("title", ""), "status": "generated"})
             except Exception as e:
-                logger.error(f"Error generating video for song {song.get('id')}: {e}")
-        
+                logger.error(f"Error starting video for song {song.get('id')}: {e}")
+
+        msg = "AI video generation started for all tracks. Refresh in 1-2 minutes." if REPLICATE_API_TOKEN else "Videos ready."
         return {
             "album_id": album_id,
-            "total_videos_generated": len(generated_videos),
-            "songs": generated_videos
+            "total_videos_generated": len(generated),
+            "songs": generated,
+            "message": msg,
         }
-    
     except HTTPException:
         raise
     except Exception as e:
