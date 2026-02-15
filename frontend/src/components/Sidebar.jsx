@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Music, LayoutDashboard, LogOut, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
+import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu, X } from "lucide-react";
 import { Button } from "./ui/button";
 
 export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
@@ -16,24 +16,9 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
       }`}
       data-testid="sidebar"
     >
-      {/* Logo with Collapse Button */}
-      <div className="p-6 border-b border-white/5 flex items-center justify-between gap-2">
-        <div className={`flex items-center gap-3 flex-1 ${isCollapsed ? "justify-center" : ""}`}>
-          <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center shadow-lg glow-primary-sm flex-shrink-0">
-            <Music className="w-5 h-5 text-primary-foreground" />
-          </div>
-          {!isCollapsed && (
-            <div className="flex-1">
-              <span className="font-display text-xl font-bold tracking-tight block">Muzify</span>
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <Sparkles className="w-3 h-3 text-primary" />
-                AI Music
-              </div>
-            </div>
-          )}
-        </div>
-        
-        {/* Collapse/Expand Button - Top Right */}
+      {/* Logo with Hamburger Button */}
+      <div className="p-6 border-b border-white/5 flex items-center justify-between gap-3">
+        {/* Hamburger Toggle Button - Left */}
         <Button
           variant="ghost"
           size="icon"
@@ -43,11 +28,27 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
           data-testid="sidebar-toggle"
         >
           {isCollapsed ? (
-            <ChevronRight className="w-4 h-4 transition-transform duration-200" />
+            <Menu className="w-5 h-5 transition-transform duration-200" />
           ) : (
-            <ChevronLeft className="w-4 h-4 transition-transform duration-200" />
+            <X className="w-5 h-5 transition-transform duration-200" />
           )}
         </Button>
+        
+        {/* Logo and Brand Name */}
+        <div className={`flex items-center gap-3 flex-1 ${isCollapsed ? "justify-center" : ""}`}>
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center shadow-lg glow-primary-sm flex-shrink-0">
+            <Music className="w-5 h-5 text-white" />
+          </div>
+          {!isCollapsed && (
+            <div className="flex-1">
+              <span className="font-display text-lg font-bold tracking-tight block bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">SoundForge</span>
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <Sparkles className="w-3 h-3 text-primary" />
+                AI Music Creation
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Navigation */}

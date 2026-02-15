@@ -484,28 +484,37 @@ def enhance_video_generation_params(song_data: dict, video_style: str = "") -> d
 # ==================== AI Suggestion Engine (Real GPT-5.2) ====================
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
-    """Generate UNIQUE AI suggestions using GPT-5.2 with advanced diversity mechanisms"""
+    """Generate REAL, DIVERSE, MUSIC-SPECIFIC AI suggestions using GPT-5.2 with advanced validation"""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="AI service not configured")
     
     uniqueness_seed = generate_uniqueness_seed()
     
-    system_prompt = f"""You are an elite music industry creative director with deep knowledge across all genres, cultures, and eras.
+    # Music-specific system prompt emphasizing real outputs (not poetry, stories, etc.)
+    system_prompt = f"""You are a world-class music production professional with 20+ years in the industry.
+You have deep knowledge of ALL musical genres, languages, cultures, and production techniques.
+You're inspired by platforms like Suno.ai, Mureka, Splice, and leading music professionals worldwide.
 
-CRITICAL RULES:
-1. Every response MUST be completely unique and creative
-2. Be specific, evocative, and professional
-3. Use vivid sensory language
-4. Reference specific production techniques when relevant
-5. Draw from diverse musical knowledge
-6. Uniqueness seed: {uniqueness_seed}
-7. NEVER repeat similar concepts, themes, or terminology from previous suggestions
-8. Each suggestion should introduce NEW ideas, perspectives, and terminology
+CRITICAL MUSIC-FIRST RULES:
+1. ONLY generate MUSIC-related suggestions - NEVER poetry, stories, or non-music concepts
+2. Every response MUST be specific, actionable, and production-ready
+3. Reference REAL production techniques, equipment, and sonic approaches
+4. Draw from genuine global music knowledge - all genres, languages, and cultures
+5. Be highly diverse - never repeat similar suggestions twice
+6. Think like a Grammy-winning producer, not a creative writer
+7. Ensure suggestions could actually guide real music creation
+8. NEVER use vague, generic, or poetic language for music fields
+9. Ground all suggestions in REAL musical production knowledge
 
-Never give generic responses. Always surprise with creativity and innovation."""
+For music genres and descriptions: Use technical production terminology.
+For titles and concepts: Ensure they're music-centric, not abstract fiction.
+For languages: Choose based on phonetic beauty and musical tradition.
+Uniqueness seed: {uniqueness_seed}
+
+Always validate: Would a professional producer find this useful and actionable?"""
 
     try:
-        # Use session-based diversity to ensure different responses for same field
+        # Use session-based diversity to ensure completely different responses
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"suggest-{field}-{uniqueness_seed}-{uuid.uuid4()}",
@@ -518,23 +527,138 @@ Never give generic responses. Always surprise with creativity and innovation."""
         
         suggestion = response.strip()
         
-        # Post-processing validation for quality
+        # Rigorous post-processing validation - FILTER OUT NON-MUSIC OUTPUTS
         if suggestion:
-            # For list-based fields (genres, languages), ensure list format
-            if field in ["genres", "vocal_languages"] and "," not in suggestion and field != "vocal_languages":
-                # Single genre provided, ensure it's reasonable
-                if len(suggestion) > 50:
-                    # Too long for a single genre, likely error
-                    suggestion = suggestion.split(",")[0].strip()
+            # Validate music-specificity for non-list fields
+            if field in ["music_prompt", "lyrics", "video_style"]:
+                suggestion = validate_music_specific_suggestion(field, suggestion)
             
-            # Remove any explanatory text that might have slipped through
-            if "\n" in suggestion:
-                suggestion = suggestion.split("\n")[0].strip()
+            # For genres and languages, ensure valid format
+            if field in ["genres", "vocal_languages"]:
+                suggestion = validate_list_suggestion(field, suggestion)
+            
+            # Ensure no multi-line poetry/stories slipped through
+            if "\n\n" in suggestion:
+                # Multiple paragraphs likely means non-music content
+                suggestion = suggestion.split("\n\n")[0].strip()
         
         return suggestion
     except Exception as e:
         logger.error(f"AI suggestion error: {e}")
         raise HTTPException(status_code=500, detail=f"AI suggestion failed: {str(e)}")
+
+def validate_music_specific_suggestion(field: str, text: str) -> str:
+    """Validate that suggestions are music-specific, not poetry or stories"""
+    # Red flags for non-music content
+    poetry_indicators = [
+        "once upon a time", "there was", "a tale", "a story",
+        "and they lived", "the end", "dear reader",
+        "metaphorically", "symbolically", "in a land",
+        "imagine if", "picture yourself", "you walk into"
+    ]
+    
+    # Music-validating keywords for music_prompt and descriptions
+    music_keywords = [
+        "acoustic", "electronic", "synth", "beat", "rhythm",
+        "tempo", "bpm", "reverb", "echo", "delay", "filter",
+        "frequency", "bass", "treble", "chord", "melody",
+        "production", "mix", "master", "eq", "compression",
+        "vocal", "instrumental", "drum", "guitar", "piano",
+        "layer", "texture", "ambient", "lofi", "breakcore",
+        "vibe", "mood", "energy", "dynamic", "groove"
+    ]
+    
+    text_lower = text.lower()
+    
+    # Check for poetry red flags
+    for flag in poetry_indicators:
+        if flag in text_lower:
+            logger.warning(f"Detected non-music content in {field}: {text[:100]}")
+            return ""  # Return empty to trigger re-suggestion
+    
+    # For music_prompt, must contain music-related terminology
+    if field == "music_prompt":
+        has_music_content = any(kw in text_lower for kw in music_keywords)
+        if not has_music_content:
+            logger.warning(f"music_prompt lacks music-specific content: {text[:100]}")
+            return ""
+    
+    # Ensure reasonable length
+    words = text.split()
+    if field == "music_prompt" and len(words) < 5:
+        return ""  # Too short
+    if field == "video_style" and len(words) < 10:
+        return ""  # Too short for visual description
+    
+    return text
+
+def validate_list_suggestion(field: str, text: str) -> str:
+    """Validate and clean list-based suggestions (genres, languages)"""
+    if not text:
+        return ""
+    
+    # Known valid genres
+    valid_genres = {
+        "electronic", "ambient", "techno", "house", "trance", "drum and bass",
+        "dnb", "dubstep", "future bass", "trap", "lo-fi", "lo-fi hip-hop",
+        "hip-hop", "rap", "pop", "indie", "indie pop", "rock", "alternative rock",
+        "metal", "death metal", "black metal", "progressive metal", "jazz",
+        "fusion jazz", "smooth jazz", "classical", "orchestral", "chamber",
+        "folk", "celtic", "world music", "afrobeat", "reggae", "dancehall",
+        "k-pop", "j-pop", "c-pop", "bollywood", "r&b", "soul", "funk", "disco",
+        "synthwave", "retrowave", "chillwave", "vaporwave", "psychedelic",
+        "experimental", "noise", "glitch", "post-rock", "math rock", "emo",
+        "punk", "emo punk", "pop punk", "grunge", "indie folk", "singer-songwriter",
+        "country", "bluegrass", "blues", "gospel", "spiritual", "ambient techno",
+        "deep house", "garage", "uk garage", "grime", "drill", "phonk",
+        "dark ambient", "industrial", "post-punk", "new wave", "synthpop",
+        "darkwave", "gothic", "ethereal wave", "hyperpop", "hyperpunk",
+        "microhouse", "clicks and cuts", "laptop", "glitchy", "modular",
+        "acid", "acid house", "acid jazz", "breakcore", "jungle", "liquid funk",
+        "liquid drum and bass", "neurofunk", "dark dnb", "hardstyle",
+        "hardcore", "happy hardcore", "gabber", "frenchcore", "industrial hardcore",
+        "psytrance", "psydub", "psychedelic trance", "goa trance", "minimal",
+        "minimal techno", "detroit techno", "berlin techno", "acid techno",
+        "tech house", "tech pop", "deep tech", "dub techno", "dub", "dubwise",
+        "roots reggae", "digital reggae", "drum and bass", "liquid bass",
+        "future garage", "bassline", "house music", "chicago house", "detroit house",
+        "melbourne bounce", "future bounce", "wonky", "wonky pop", "tribal",
+        "tribal techno", "world electronica", "plunderphonics", "musique concrète"
+    }
+    
+    # Known valid languages (use ISO 639-1 codes and names)
+    valid_languages = {
+        "english", "spanish", "french", "german", "italian", "portuguese",
+        "russian", "chinese", "japanese", "korean", "hindi", "arabic",
+        "turkish", "dutch", "polish", "swedish", "norwegian", "danish",
+        "finnish", "greek", "hebrew", "thai", "vietnamese", "tagalog",
+        "afrikaans", "bengali", "punjabi", "urdu", "farsi", "turkish",
+        "indonesian", "malay", "icelandic", "czech", "hungarian", "romanian",
+        "bulgarian", "croatian", "serbian", "slovak", "slovenian", "estonian",
+        "latvian", "lithuanian", "maltese", "basque", "catalan", "galician",
+        "welsh", "irish", "gaelic", "luxembourgish", "breton", "corsican",
+        "occitan", "provençal", "esperanto", "latin", "ancient greek",
+        "instrumental", "vocables", "singing", "chant", "yodeling",
+        "a cappella", "acapella"
+    }
+    
+    # Clean up the suggestion
+    if field == "genres":
+        # Split by comma and validate
+        genres = [g.strip().lower() for g in text.split(",")]
+        genres = [g for g in genres if g in valid_genres or len(g) > 2]  # Allow unknown niche genres
+        return ", ".join(genres[:4]) if genres else ""
+    
+    elif field == "vocal_languages":
+        # Handle special cases
+        if "instrumental" in text.lower():
+            return "Instrumental"
+        
+        languages = [l.strip().lower() for l in text.split(",")]
+        languages = [l for l in languages if l in valid_languages or len(l) > 2]
+        return ", ".join(languages[:3]) if languages else ""
+    
+    return text
 
 async def generate_lyrics(music_prompt: str, genres: list, languages: list, title: str = "") -> str:
     """Generate creative lyrics based on music description, genres, and languages"""
