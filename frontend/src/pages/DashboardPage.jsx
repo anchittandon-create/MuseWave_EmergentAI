@@ -15,11 +15,7 @@ export default function DashboardPage({ user }) {
   const [generatingVideo, setGeneratingVideo] = useState({});
   const [downloadingAlbum, setDownloadingAlbum] = useState({});
 
-  useEffect(() => {
-    fetchDashboard();
-  }, [user.id]);
-
-  const fetchDashboard = async () => {
+  const fetchDashboard = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/dashboard/${user.id}`);
       setData(response.data);
@@ -28,7 +24,11 @@ export default function DashboardPage({ user }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user.id]);
+
+  useEffect(() => {
+    fetchDashboard();
+  }, [fetchDashboard]);
 
   const playTrack = useCallback((trackUrl, trackId) => {
     if (audioRef) audioRef.pause();
