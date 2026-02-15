@@ -38,14 +38,14 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
           variant="ghost"
           size="icon"
           onClick={() => onCollapsedChange(!isCollapsed)}
-          className="h-9 w-9 p-0 hover:bg-white/10 flex-shrink-0"
+          className="h-9 w-9 p-0 hover:bg-primary/10 hover:text-primary flex-shrink-0 transition-all duration-200 rounded-lg border border-transparent hover:border-primary/20"
           title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           data-testid="sidebar-toggle"
         >
           {isCollapsed ? (
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-4 h-4 transition-transform duration-200" />
           ) : (
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-4 h-4 transition-transform duration-200" />
           )}
         </Button>
       </div>

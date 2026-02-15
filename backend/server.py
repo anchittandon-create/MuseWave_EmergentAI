@@ -346,7 +346,7 @@ def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate) -> flo
 # ==================== AI Suggestion Engine (Real GPT-5.2) ====================
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
-    """Generate UNIQUE AI suggestions using GPT-5.2"""
+    """Generate UNIQUE AI suggestions using GPT-5.2 with advanced diversity mechanisms"""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="AI service not configured")
     
@@ -361,13 +361,16 @@ CRITICAL RULES:
 4. Reference specific production techniques when relevant
 5. Draw from diverse musical knowledge
 6. Uniqueness seed: {uniqueness_seed}
+7. NEVER repeat similar concepts, themes, or terminology from previous suggestions
+8. Each suggestion should introduce NEW ideas, perspectives, and terminology
 
-Never give generic responses. Always surprise with creativity."""
+Never give generic responses. Always surprise with creativity and innovation."""
 
     try:
+        # Use session-based diversity to ensure different responses for same field
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
-            session_id=f"suggest-{uniqueness_seed}-{uuid.uuid4()}",
+            session_id=f"suggest-{field}-{uniqueness_seed}-{uuid.uuid4()}",
             system_message=system_prompt
         ).with_model("openai", "gpt-5.2")
         
@@ -375,10 +378,76 @@ Never give generic responses. Always surprise with creativity."""
         user_message = UserMessage(text=prompt)
         response = await chat.send_message(user_message)
         
-        return response.strip()
+        suggestion = response.strip()
+        
+        # Post-processing validation for quality
+        if suggestion:
+            # For list-based fields (genres, languages), ensure list format
+            if field in ["genres", "vocal_languages"] and "," not in suggestion and field != "vocal_languages":
+                # Single genre provided, ensure it's reasonable
+                if len(suggestion) > 50:
+                    # Too long for a single genre, likely error
+                    suggestion = suggestion.split(",")[0].strip()
+            
+            # Remove any explanatory text that might have slipped through
+            if "\n" in suggestion:
+                suggestion = suggestion.split("\n")[0].strip()
+        
+        return suggestion
     except Exception as e:
         logger.error(f"AI suggestion error: {e}")
         raise HTTPException(status_code=500, detail=f"AI suggestion failed: {str(e)}")
+
+async def generate_lyrics(music_prompt: str, genres: list, languages: list, title: str = "") -> str:
+    """Generate creative lyrics based on music description, genres, and languages"""
+    if not EMERGENT_LLM_KEY:
+        return ""  # Silently fail for lyrics generation
+    
+    try:
+        system_prompt = """You are a Grammy-winning lyricist and songwriter with expertise in multiple languages and musical genres.
+        
+CRITICAL RULES FOR LYRICS:
+1. Create authentic, emotionally resonant lyrics that match the musical style
+2. Use vivid imagery and poetic language
+3. Adapt linguistic quality to match the language
+4. Consider cultural context and authenticity
+5. Write in the specified language(s)
+6. Create lyrics that a professional vocalist would enjoy performing
+7. Structure as verse-chorus or other appropriate format
+
+Always provide complete, singable lyrics - not just themes or concepts."""
+
+        languages_str = ", ".join(languages) if languages else "English"
+        genres_str = ", ".join(genres) if genres else "pop"
+        title_ref = f"for '{title}'" if title else ""
+        
+        lyrics_prompt = f"""Write complete, emotionally engaging lyrics {title_ref} for a {genres_str} song.
+
+Music Description: {music_prompt}
+
+Requirements:
+- Language(s): {languages_str}
+- Style: Match the mood and energy of the music description
+- Format: Verse 1 → Chorus → Verse 2 → Chorus → Bridge (optional) → Final Chorus
+- Length: 3-4 verses and 2-3 chorus repetitions
+- Authenticity: Create lyrics that feel natural and singable
+- Imagery: Use vivid, specific imagery that connects to the musical theme
+
+Write only the lyrics, no explanations. Make them professional and ready for recording."""
+
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"lyrics-{uuid.uuid4()}",
+            system_message=system_prompt
+        ).with_model("openai", "gpt-5.2")
+        
+        user_message = UserMessage(text=lyrics_prompt)
+        response = await chat.send_message(user_message)
+        
+        return response.strip() if response else ""
+    except Exception as e:
+        logger.error(f"Lyrics generation error: {e}")
+        return ""  # Return empty string if lyrics generation fails
 
 def build_suggestion_prompt(field: str, current_value: str, context: dict, seed: str) -> str:
     context_parts = []
@@ -658,6 +727,20 @@ async def create_song(song_data: SongCreate):
     # Select cover art
     cover_art_url = select_cover_art(song_data.genres)
     
+    # Generate lyrics if not provided and has vocals
+    lyrics = song_data.lyrics or ""
+    if not lyrics and song_data.vocal_languages and "Instrumental" not in song_data.vocal_languages:
+        try:
+            lyrics = await generate_lyrics(
+                song_data.music_prompt,
+                song_data.genres,
+                song_data.vocal_languages,
+                title
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate lyrics: {e}")
+            # Continue without lyrics if generation fails
+    
     song_doc = {
         "id": song_id,
         "title": title,
@@ -665,7 +748,7 @@ async def create_song(song_data: SongCreate):
         "genres": song_data.genres,
         "duration_seconds": actual_duration,
         "vocal_languages": song_data.vocal_languages,
-        "lyrics": song_data.lyrics or "",
+        "lyrics": lyrics,
         "artist_inspiration": song_data.artist_inspiration or "",
         "generate_video": song_data.generate_video,
         "video_style": song_data.video_style or "",
@@ -747,6 +830,19 @@ async def create_album(album_data: AlbumCreate):
         audio_data = select_audio_for_genres(album_data.genres, used_audio_urls)
         used_audio_urls.add(audio_data["url"])
         
+        # Generate lyrics for this track if vocals are included
+        track_lyrics = album_data.lyrics or ""
+        if not track_lyrics and album_data.vocal_languages and "Instrumental" not in album_data.vocal_languages:
+            try:
+                track_lyrics = await generate_lyrics(
+                    f"{album_data.music_prompt} ({mood_variation})",
+                    album_data.genres,
+                    album_data.vocal_languages,
+                    track_title
+                )
+            except Exception as e:
+                logger.warning(f"Failed to generate lyrics for album track {i + 1}: {e}")
+        
         song_doc = {
             "id": str(uuid.uuid4()),
             "title": track_title,
@@ -754,7 +850,7 @@ async def create_album(album_data: AlbumCreate):
             "genres": album_data.genres,
             "duration_seconds": audio_data["duration"],
             "vocal_languages": album_data.vocal_languages,
-            "lyrics": album_data.lyrics or "",
+            "lyrics": track_lyrics,
             "artist_inspiration": album_data.artist_inspiration or "",
             "generate_video": False,
             "video_style": "",

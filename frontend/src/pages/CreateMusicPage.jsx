@@ -28,6 +28,7 @@ export default function CreateMusicPage({ user }) {
   const [showAllGenres, setShowAllGenres] = useState(false);
   const [aiSuggestedFields, setAiSuggestedFields] = useState(new Set());
   const [lastSuggestion, setLastSuggestion] = useState({});
+  const [expandedSongIndex, setExpandedSongIndex] = useState(null);
 
   const [formData, setFormData] = useState({
     title: "",
@@ -40,7 +41,32 @@ export default function CreateMusicPage({ user }) {
     generateVideo: false,
     videoStyle: "",
     numSongs: 3,
+    albumSongs: [], // Array of song configs for album mode
   });
+
+  // Initialize album songs when number changes
+  useEffect(() => {
+    if (mode === "album" && formData.albumSongs.length !== formData.numSongs) {
+      const newSongs = [];
+      for (let i = 0; i < formData.numSongs; i++) {
+        if (i < formData.albumSongs.length) {
+          newSongs.push(formData.albumSongs[i]);
+        } else {
+          newSongs.push({
+            title: "",
+            musicPrompt: "",
+            selectedGenres: [],
+            durationSeconds: 25,
+            vocalLanguages: [],
+            lyrics: "",
+            artistInspiration: "",
+            videoStyle: "",
+          });
+        }
+      }
+      setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
+    }
+  }, [formData.numSongs, mode]);
 
   useEffect(() => {
     fetchKnowledgeBases();
@@ -96,20 +122,54 @@ export default function CreateMusicPage({ user }) {
 
   const displayedGenres = showAllGenres ? filteredGenres : filteredGenres.slice(0, 20);
 
-  const handleAISuggest = async (field) => {
+  const handleAISuggest = async (field, songIndex = null) => {
     setSuggestingField(field);
     try {
-      const response = await axios.post(`${API}/suggest`, {
-        field,
-        current_value: getFieldValue(field),
-        context: {
+      // Get current value based on mode (single or album song)
+      let currentValue, context;
+      
+      if (mode === "album" && songIndex !== null) {
+        const song = formData.albumSongs[songIndex];
+        const fieldMap = {
+          title: song.title,
+          music_prompt: song.musicPrompt,
+          genres: song.selectedGenres.join(", "),
+          lyrics: song.lyrics,
+          artist_inspiration: song.artistInspiration,
+          video_style: song.videoStyle,
+          vocal_languages: song.vocalLanguages.join(", "),
+          duration: formatDuration(song.durationSeconds),
+        };
+        currentValue = fieldMap[field] || "";
+        context = {
+          music_prompt: song.musicPrompt,
+          genres: song.selectedGenres,
+          lyrics: song.lyrics,
+          artist_inspiration: song.artistInspiration,
+          album_context: formData.title, // Album title for context
+          track_number: songIndex + 1,
+        };
+      } else {
+        currentValue = getFieldValue(field);
+        context = {
           music_prompt: formData.musicPrompt,
           genres: formData.selectedGenres,
           lyrics: formData.lyrics,
           artist_inspiration: formData.artistInspiration,
-        },
+        };
+      }
+
+      const response = await axios.post(`${API}/suggest`, {
+        field,
+        current_value: currentValue,
+        context,
       });
-      applySuggestion(field, response.data.suggestion);
+
+      if (mode === "album" && songIndex !== null) {
+        applySuggestionToSong(songIndex, field, response.data.suggestion);
+      } else {
+        applySuggestion(field, response.data.suggestion);
+      }
       toast.success("AI suggestion applied!", { duration: 2000 });
     } catch (error) {
       toast.error(error.response?.data?.detail || "Failed to get suggestion");
@@ -232,6 +292,76 @@ export default function CreateMusicPage({ user }) {
         setDurationInput(formatDuration(parsed));
         setFormData((prev) => ({ ...prev, durationSeconds: parsed }));
       }
+    }
+  };
+
+  // Helper function to update album song data
+  const updateAlbumSong = (index, updates) => {
+    const newSongs = [...formData.albumSongs];
+    newSongs[index] = { ...newSongs[index], ...updates };
+    setFormData((prev) => ({ ...prev, albumSongs: newSongs }));
+  };
+
+  // Apply AI suggestion to a specific album song
+  const applySuggestionToSong = (songIndex, field, suggestion) => {
+    const trimmed = (suggestion || "").trim();
+    if (!trimmed) return;
+
+    const song = formData.albumSongs[songIndex];
+    const updates = {};
+
+    switch (field) {
+      case "title":
+        updates.title = trimmed;
+        break;
+      case "music_prompt":
+        updates.musicPrompt = trimmed;
+        break;
+      case "lyrics":
+        updates.lyrics = trimmed;
+        break;
+      case "artist_inspiration":
+        updates.artistInspiration = trimmed;
+        break;
+      case "video_style":
+        updates.videoStyle = trimmed;
+        break;
+      case "duration":
+        const parsed = parseDurationInput(trimmed);
+        if (parsed !== null && parsed >= 10) {
+          updates.durationSeconds = parsed;
+        }
+        break;
+      case "genres":
+        const suggestedGenres = trimmed.split(",").map((g) => g.trim()).filter(Boolean);
+        const validGenres = [];
+        for (const g of suggestedGenres) {
+          const match = findBestMatch(g, genres);
+          if (match && !validGenres.includes(match)) validGenres.push(match);
+        }
+        if (validGenres.length > 0) {
+          updates.selectedGenres = validGenres;
+        }
+        break;
+      case "vocal_languages":
+        const suggestedLangs = trimmed.split(",").map((l) => l.trim()).filter(Boolean);
+        const validLangs = [];
+        for (const l of suggestedLangs) {
+          const match = findBestMatch(l, languages);
+          if (match && !validLangs.includes(match)) validLangs.push(match);
+        }
+        if (validLangs.length > 0) {
+          updates.vocalLanguages = validLangs;
+        } else if (trimmed.toLowerCase().includes("instrumental")) {
+          updates.vocalLanguages = ["Instrumental"];
+        }
+        break;
+      default:
+        break;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateAlbumSong(songIndex, updates);
     }
   };
 
@@ -371,6 +501,230 @@ export default function CreateMusicPage({ user }) {
                 />
                 <span className="text-sm text-muted-foreground">tracks with cohesive variation</span>
               </div>
+            </div>
+          )}
+
+          {/* Album Songs Configuration */}
+          {mode === "album" && formData.albumSongs.length > 0 && (
+            <div className="space-y-3">
+              <Label className="text-xs uppercase tracking-widest text-muted-foreground block">
+                Configure Each Track
+              </Label>
+              <div className="space-y-2">
+                {formData.albumSongs.map((song, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setExpandedSongIndex(expandedSongIndex === idx ? null : idx)}
+                    className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
+                      expandedSongIndex === idx
+                        ? "border-primary bg-primary/5"
+                        : "border-white/10 hover:border-white/20 hover:bg-white/[0.02]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h4 className="font-semibold text-sm mb-1">
+                          Track {idx + 1}{song.title ? `: ${song.title}` : ""}
+                        </h4>
+                        {song.musicPrompt && (
+                          <p className="text-xs text-muted-foreground line-clamp-1">{song.musicPrompt}</p>
+                        )}
+                      </div>
+                      <ChevronDown
+                        className={`w-5 h-5 text-muted-foreground transition-transform ${
+                          expandedSongIndex === idx ? "rotate-180" : ""
+                        }`}
+                      />
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Expanded Song Details */}
+          {mode === "album" && expandedSongIndex !== null && (
+            <div className="space-y-6 p-6 rounded-2xl bg-card border border-white/10 animate-fade-in">
+              <h3 className="font-display text-lg font-bold">Track {expandedSongIndex + 1} Details</h3>
+              
+              {/* Song Title */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Track Title</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("title", expandedSongIndex)}
+                    disabled={suggestingField === "title"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "title" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <Input
+                  placeholder="e.g., Midnight Dreams"
+                  value={formData.albumSongs[expandedSongIndex].title}
+                  onChange={(e) => updateAlbumSong(expandedSongIndex, { title: e.target.value })}
+                  className="h-12 text-lg bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
+                />
+              </div>
+
+              {/* Song Prompt */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Track Description</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("music_prompt", expandedSongIndex)}
+                    disabled={suggestingField === "music_prompt"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "music_prompt" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <Textarea
+                  placeholder="Describe the mood, style, and feel of this specific track..."
+                  value={formData.albumSongs[expandedSongIndex].musicPrompt}
+                  onChange={(e) => updateAlbumSong(expandedSongIndex, { musicPrompt: e.target.value })}
+                  className="min-h-[100px] text-base leading-relaxed bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary resize-none p-4"
+                />
+              </div>
+
+              {/* Song Duration */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Duration</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("duration", expandedSongIndex)}
+                    disabled={suggestingField === "duration"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "duration" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <div className="flex items-center gap-4">
+                  <Input
+                    value={formatDuration(formData.albumSongs[expandedSongIndex].durationSeconds)}
+                    onChange={(e) => {
+                      const parsed = parseDurationInput(e.target.value);
+                      if (parsed !== null) {
+                        updateAlbumSong(expandedSongIndex, { durationSeconds: parsed });
+                      }
+                    }}
+                    className="w-32 h-11 font-mono text-center bg-secondary/50"
+                    placeholder="e.g. 1:30"
+                  />
+                  <span className="text-sm text-muted-foreground">Format: 30s, 1:30, or 1m 30s</span>
+                </div>
+              </div>
+
+              {/* Song Lyrics */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Lyrics/Concept</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("lyrics", expandedSongIndex)}
+                    disabled={suggestingField === "lyrics"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "lyrics" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <Textarea
+                  placeholder="Enter lyrics, lyrical themes, or concepts for this track..."
+                  value={formData.albumSongs[expandedSongIndex].lyrics}
+                  onChange={(e) => updateAlbumSong(expandedSongIndex, { lyrics: e.target.value })}
+                  className="min-h-[80px] text-base leading-relaxed bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary resize-none p-4"
+                />
+              </div>
+
+              {/* Song Genres */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Genres</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("genres", expandedSongIndex)}
+                    disabled={suggestingField === "genres"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "genres" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {genres.map((genre) => (
+                    <Badge
+                      key={genre}
+                      variant={formData.albumSongs[expandedSongIndex].selectedGenres.includes(genre) ? "default" : "outline"}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        const selected = formData.albumSongs[expandedSongIndex].selectedGenres.includes(genre)
+                          ? formData.albumSongs[expandedSongIndex].selectedGenres.filter((g) => g !== genre)
+                          : [...formData.albumSongs[expandedSongIndex].selectedGenres, genre];
+                        updateAlbumSong(expandedSongIndex, { selectedGenres: selected });
+                      }}
+                    >
+                      {genre}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+
+              {/* Song Languages */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Vocal Languages</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleAISuggest("vocal_languages", expandedSongIndex)}
+                    disabled={suggestingField === "vocal_languages"}
+                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                  >
+                    {suggestingField === "vocal_languages" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {languages.map((lang) => (
+                    <Badge
+                      key={lang}
+                      variant={formData.albumSongs[expandedSongIndex].vocalLanguages.includes(lang) ? "default" : "outline"}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        const selected = formData.albumSongs[expandedSongIndex].vocalLanguages.includes(lang)
+                          ? formData.albumSongs[expandedSongIndex].vocalLanguages.filter((l) => l !== lang)
+                          : [...formData.albumSongs[expandedSongIndex].vocalLanguages, lang];
+                        updateAlbumSong(expandedSongIndex, { vocalLanguages: selected });
+                      }}
+                    >
+                      {lang}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+
+              {/* Close Button */}
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setExpandedSongIndex(null)}
+                className="w-full text-muted-foreground hover:text-foreground"
+              >
+                Done Configuring Track {expandedSongIndex + 1}
+              </Button>
             </div>
           )}
 
@@ -757,9 +1111,37 @@ export default function CreateMusicPage({ user }) {
                       alt={result.data.title}
                       className="w-28 h-28 rounded-xl object-cover shadow-lg"
                     />
-                    <div>
+                    <div className="flex-1">
                       <h3 className="text-2xl font-bold">{result.data.title}</h3>
                       <p className="text-muted-foreground mt-1">{result.data.songs?.length || 0} tracks</p>
+                      <div className="flex items-center gap-3 mt-4">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              const response = await axios.get(`${API}/albums/${result.data.id}/download?user_id=${user.id}`, {
+                                responseType: "blob",
+                              });
+                              const url = window.URL.createObjectURL(new Blob([response.data]));
+                              const link = document.createElement("a");
+                              link.href = url;
+                              link.setAttribute("download", `${result.data.title}.zip`);
+                              document.body.appendChild(link);
+                              link.click();
+                              link.parentNode.removeChild(link);
+                              window.URL.revokeObjectURL(url);
+                              toast.success("Album downloaded!");
+                            } catch (error) {
+                              toast.error("Failed to download album");
+                            }
+                          }}
+                          className="gap-2"
+                        >
+                          <Download className="w-4 h-4" />
+                          Download Album
+                        </Button>
+                      </div>
                     </div>
                   </div>
                   {result.data.songs?.map((track, i) => (
@@ -782,47 +1164,114 @@ export default function CreateMusicPage({ user }) {
 }
 
 const TrackCard = ({ track, index, isPlaying, onPlay }) => {
+  const [generatingVideo, setGeneratingVideo] = useState(false);
+  const [videoUrl, setVideoUrl] = useState(track.video_url || null);
+  const [showVideo, setShowVideo] = useState(false);
+
   const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
+  const generateVideo = async () => {
+    try {
+      setGeneratingVideo(true);
+      const response = await axios.post(`${API}/songs/${track.id}/generate-video?user_id=${track.user_id}`);
+      if (response.data.video_url) {
+        setVideoUrl(response.data.video_url);
+        toast.success("Video generated successfully!");
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to generate video");
+    } finally {
+      setGeneratingVideo(false);
+    }
+  };
+
   return (
-    <div className="track-card flex items-center gap-4 p-4 group" data-testid={`track-card-${track.id}`}>
-      {/* Cover / Play */}
-      <div className="relative w-16 h-16 rounded-lg overflow-hidden flex-shrink-0">
-        <img src={track.cover_art_url} alt={track.title} className="w-full h-full object-cover" />
-        <button
-          onClick={onPlay}
-          className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-          data-testid={`play-btn-${track.id}`}
-        >
-          {isPlaying ? <Pause className="w-6 h-6 text-white" /> : <Play className="w-6 h-6 text-white" />}
-        </button>
-        {isPlaying && (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-0.5">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="w-1 bg-primary rounded-full waveform-bar" style={{ height: '60%' }} />
-            ))}
-          </div>
-        )}
+    <div className="space-y-3">
+      <div className="track-card flex items-center gap-4 p-4 group" data-testid={`track-card-${track.id}`}>
+        {/* Cover / Play */}
+        <div className="relative w-16 h-16 rounded-lg overflow-hidden flex-shrink-0">
+          <img src={track.cover_art_url} alt={track.title} className="w-full h-full object-cover" />
+          <button
+            onClick={onPlay}
+            className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+            data-testid={`play-btn-${track.id}`}
+          >
+            {isPlaying ? <Pause className="w-6 h-6 text-white" /> : <Play className="w-6 h-6 text-white" />}
+          </button>
+          {isPlaying && (
+            <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-0.5">
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="w-1 bg-primary rounded-full waveform-bar" style={{ height: '60%' }} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          {index && <span className="text-xs text-muted-foreground font-mono">Track {index}</span>}
+          <h4 className="font-medium truncate">{track.title}</h4>
+          <p className="text-sm text-muted-foreground font-mono">{formatTime(track.duration_seconds)}</p>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          {/* Generate Video Button */}
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onClick={generateVideo}
+            disabled={generatingVideo}
+            className="h-10 w-10 p-0 hover:bg-white/5"
+            title="Generate video for this track"
+          >
+            {generatingVideo ? (
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+            ) : (
+              <Film className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+            )}
+          </Button>
+
+          {/* Download Button */}
+          <a
+            href={track.audio_url}
+            download
+            className="p-2.5 rounded-lg hover:bg-white/5 transition-colors"
+            data-testid={`download-btn-${track.id}`}
+            title="Download audio"
+          >
+            <Download className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+          </a>
+        </div>
       </div>
 
-      {/* Info */}
-      <div className="flex-1 min-w-0">
-        {index && <span className="text-xs text-muted-foreground font-mono">Track {index}</span>}
-        <h4 className="font-medium truncate">{track.title}</h4>
-        <p className="text-sm text-muted-foreground font-mono">{formatTime(track.duration_seconds)}</p>
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center gap-2">
-        <a
-          href={track.audio_url}
-          download
-          className="p-2.5 rounded-lg hover:bg-white/5 transition-colors"
-          data-testid={`download-btn-${track.id}`}
-        >
-          <Download className="w-5 h-5 text-muted-foreground hover:text-foreground" />
-        </a>
-      </div>
+      {/* Video Player */}
+      {videoUrl && (
+        <div className="rounded-xl overflow-hidden border border-white/10 bg-black">
+          <button
+            type="button"
+            onClick={() => setShowVideo(!showVideo)}
+            className="w-full p-3 flex items-center justify-between hover:bg-white/5 transition-colors"
+          >
+            <span className="text-sm font-medium flex items-center gap-2">
+              <Film className="w-4 h-4" />
+              Video Preview
+            </span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showVideo ? "rotate-180" : ""}`} />
+          </button>
+          {showVideo && (
+            <div className="aspect-video bg-black">
+              <video
+                src={videoUrl}
+                controls
+                className="w-full h-full"
+                preload="metadata"
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
