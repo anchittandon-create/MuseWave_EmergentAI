@@ -27,7 +27,7 @@ export default function HomePage() {
   ];
 
   const features = [
-    { icon: Zap, label: "Real-time AI", desc: "GPT-5.2 powered suggestions" },
+    { icon: Zap, label: "Real-time AI", desc: "OpenAI-powered suggestions" },
     { icon: Layers, label: "Albums & Singles", desc: "Create cohesive collections" },
     { icon: Globe, label: "60+ Genres", desc: "From mainstream to underground" },
     { icon: Music, label: "Instant Playback", desc: "Preview and download" },
@@ -172,7 +172,7 @@ export default function HomePage() {
                 Singles or Albums.<br />Your Choice.
               </h2>
               <p className="text-muted-foreground text-lg leading-relaxed mb-10">
-                Whether you're crafting a single track or a complete album, Muzify gives you 
+                Whether you're crafting a single track or a complete album, MuseWave gives you 
                 professional-grade tools to bring your musical vision to life.
               </p>
 
@@ -256,7 +256,7 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Music className="w-5 h-5 text-primary" />
-            <span className="font-semibold">Muzify</span>
+            <span className="font-semibold">MuseWave</span>
           </div>
           <p className="text-sm text-muted-foreground">
             AI-Powered Music Creation

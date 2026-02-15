@@ -61,7 +61,7 @@ export default function AuthPage({ onLogin }) {
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-primary glow-primary mb-6 shadow-2xl">
             <Music className="w-10 h-10 text-primary-foreground" />
           </div>
-          <h1 className="font-display text-4xl font-bold tracking-tight">Muzify</h1>
+          <h1 className="font-display text-4xl font-bold tracking-tight">MuseWave</h1>
           <p className="text-muted-foreground mt-2">AI-Powered Music Creation</p>
         </div>
 

@@ -5,10 +5,6 @@
   "installCommand": "cd frontend && npm install --legacy-peer-deps",
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://muzify-1.preview.emergentagent.com/api/:path*"
-    },
-    {
       "source": "/((?!api).*)",
       "destination": "/index.html"
     }

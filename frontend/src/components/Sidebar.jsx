@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu, X } from "lucide-react";
+import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu } from "lucide-react";
 import { Button } from "./ui/button";
 
 export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
@@ -17,21 +17,17 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
       data-testid="sidebar"
     >
       {/* Logo with Hamburger Button */}
-      <div className="p-6 border-b border-white/5 flex items-center justify-between gap-3">
+      <div className="p-4 border-b border-white/5 flex items-center gap-3">
         {/* Hamburger Toggle Button - Left */}
         <Button
           variant="ghost"
           size="icon"
           onClick={() => onCollapsedChange(!isCollapsed)}
-          className="h-9 w-9 p-0 hover:bg-primary/10 hover:text-primary flex-shrink-0 transition-all duration-200 rounded-lg border border-transparent hover:border-primary/20"
+          className="h-10 w-10 p-0 rounded-lg border border-white/10 hover:bg-primary/10 hover:text-primary hover:border-primary/30 flex-shrink-0"
           title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           data-testid="sidebar-toggle"
         >
-          {isCollapsed ? (
-            <Menu className="w-5 h-5 transition-transform duration-200" />
-          ) : (
-            <X className="w-5 h-5 transition-transform duration-200" />
-          )}
+          <Menu className="w-5 h-5" />
         </Button>
         
         {/* Logo and Brand Name */}
@@ -41,10 +37,10 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
           </div>
           {!isCollapsed && (
             <div className="flex-1">
-              <span className="font-display text-lg font-bold tracking-tight block bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">SoundForge</span>
+              <span className="font-display text-lg font-bold tracking-tight block bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">MuseWave</span>
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                 <Sparkles className="w-3 h-3 text-primary" />
-                AI Music Creation
+                AI Music Studio
               </div>
             </div>
           )}
@@ -97,7 +93,7 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
           data-testid="logout-btn"
           title={isCollapsed ? "Logout" : ""}
         >
-          <LogOut className="w-4 h-4 mr-3" />
+          <LogOut className={`w-4 h-4 ${isCollapsed ? "" : "mr-3"}`} />
           {!isCollapsed && "Logout"}
         </Button>
       </div>

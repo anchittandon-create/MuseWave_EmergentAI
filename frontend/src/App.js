@@ -8,8 +8,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://muzify-1.preview.emergentagent.com";
-export const API = `${BACKEND_URL}/api`;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+export const API = `${BACKEND_URL.replace(/\/$/, "")}/api`;
 
 function App() {
   const [user, setUser] = useState(null);
@@ -17,7 +17,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("muzify_user");
+    const savedUser = localStorage.getItem("musewave_user") || localStorage.getItem("muzify_user");
     if (savedUser) {
       setUser(JSON.parse(savedUser));
     }
@@ -26,11 +26,12 @@ function App() {
 
   const handleLogin = (userData) => {
     setUser(userData);
-    localStorage.setItem("muzify_user", JSON.stringify(userData));
+    localStorage.setItem("musewave_user", JSON.stringify(userData));
   };
 
   const handleLogout = () => {
     setUser(null);
+    localStorage.removeItem("musewave_user");
     localStorage.removeItem("muzify_user");
   };
 
