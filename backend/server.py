@@ -1,10 +1,10 @@
 """
-Muzify - AI Music Creation Application
-Premium Demo Mode with:
-- Real AI Suggestions (OpenAI GPT-5.2)
-- Curated Royalty-Free Audio Library
-- Real Video Generation (Sora 2) - Optional
-- Comprehensive Knowledge Bases
+MuseWave - AI Music Creation Application
+Independent backend with:
+- OpenAI-powered AI suggestions and lyrics synthesis
+- Optional external provider hook for actual music generation
+- Optional Replicate-based video generation
+- Global knowledge bases for genres/languages/artists
 """
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
@@ -21,14 +21,14 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from openai import OpenAI
 import random
 import hashlib
 import zipfile
 import io
 import base64
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import json
 
 ROOT_DIR = Path(__file__).parent
@@ -37,21 +37,27 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'muzify_db')]
+db = client[os.environ.get('DB_NAME', 'musewave_db')]
 
 # API Keys
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
+MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
+MUSICGEN_API_KEY = os.environ.get("MUSICGEN_API_KEY")
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Create the main app
-app = FastAPI(title="Muzify API", description="AI Music Creation Platform")
+app = FastAPI(title="MuseWave API", description="AI Music Creation Platform")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+
+RECENT_SUGGESTIONS: dict[str, list[str]] = {}
 
 # ==================== CURATED AUDIO LIBRARY ====================
 # High-quality royalty-free tracks from reliable CDN sources
@@ -221,9 +227,9 @@ class UserResponse(BaseModel):
 class SongCreate(BaseModel):
     title: Optional[str] = ""
     music_prompt: str
-    genres: List[str] = []
+    genres: List[str] = Field(default_factory=list)
     duration_seconds: int = 15
-    vocal_languages: List[str] = []
+    vocal_languages: List[str] = Field(default_factory=list)
     lyrics: Optional[str] = ""
     artist_inspiration: Optional[str] = ""
     generate_video: bool = False
@@ -232,22 +238,33 @@ class SongCreate(BaseModel):
     album_id: Optional[str] = None
     user_id: str
 
-class AlbumCreate(BaseModel):
-    title: str
+class AlbumSongInput(BaseModel):
+    title: Optional[str] = ""
     music_prompt: str
-    genres: List[str] = []
-    vocal_languages: List[str] = []
+    genres: List[str] = Field(default_factory=list)
+    duration_seconds: int = 25
+    vocal_languages: List[str] = Field(default_factory=list)
+    lyrics: Optional[str] = ""
+    artist_inspiration: Optional[str] = ""
+    video_style: Optional[str] = ""
+
+class AlbumCreate(BaseModel):
+    title: Optional[str] = ""
+    music_prompt: Optional[str] = ""
+    genres: List[str] = Field(default_factory=list)
+    vocal_languages: List[str] = Field(default_factory=list)
     lyrics: Optional[str] = ""
     artist_inspiration: Optional[str] = ""
     generate_video: bool = False
     video_style: Optional[str] = ""
     num_songs: int = 3
+    album_songs: List[AlbumSongInput] = Field(default_factory=list)
     user_id: str
 
 class AISuggestRequest(BaseModel):
     field: str
     current_value: Optional[str] = ""
-    context: dict = {}
+    context: dict = Field(default_factory=dict)
 
 # ==================== Uniqueness Utilities ====================
 
@@ -301,6 +318,91 @@ def select_cover_art(genres: List[str]) -> str:
     category = get_genre_category(genres)
     covers = COVER_ART_LIBRARY.get(category, COVER_ART_LIBRARY["default"])
     return random.choice(covers)
+
+def _extract_audio_url(payload: dict) -> Optional[str]:
+    """Extract an audio URL from common provider response shapes."""
+    candidates = [
+        payload.get("audio_url"),
+        payload.get("url"),
+        payload.get("output_url"),
+        payload.get("result_url"),
+        (payload.get("data") or {}).get("audio_url") if isinstance(payload.get("data"), dict) else None,
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    output = payload.get("output")
+    if isinstance(output, str) and output.startswith(("http://", "https://")):
+        return output
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, str) and item.startswith(("http://", "https://")):
+                return item
+            if isinstance(item, dict):
+                nested = item.get("url") or item.get("audio_url")
+                if isinstance(nested, str) and nested.startswith(("http://", "https://")):
+                    return nested
+    return None
+
+def _remember_suggestion(field: str, suggestion: str) -> bool:
+    """Returns True if suggestion is unique in recent memory for a field."""
+    text = (suggestion or "").strip().lower()
+    if not text:
+        return False
+    bucket = RECENT_SUGGESTIONS.get(field, [])
+    if text in bucket:
+        return False
+    bucket.append(text)
+    RECENT_SUGGESTIONS[field] = bucket[-30:]
+    return True
+
+async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str]:
+    """
+    Generate/obtain track audio.
+    1) If MUSICGEN_API_URL is configured, call it for real generation.
+    2) Fallback to curated demo library if provider is unavailable or fails.
+    Returns: (audio_url, duration_seconds, is_demo, provider_name)
+    """
+    if used_audio_urls is None:
+        used_audio_urls = set()
+
+    if MUSICGEN_API_URL:
+        try:
+            headers = {"Content-Type": "application/json"}
+            if MUSICGEN_API_KEY:
+                headers["Authorization"] = f"Bearer {MUSICGEN_API_KEY}"
+            provider_payload = {
+                "title": song_payload.get("title", ""),
+                "prompt": song_payload.get("music_prompt", ""),
+                "genres": song_payload.get("genres", []),
+                "lyrics": song_payload.get("lyrics", ""),
+                "vocal_languages": song_payload.get("vocal_languages", []),
+                "duration_seconds": song_payload.get("duration_seconds", 30),
+                "artist_inspiration": song_payload.get("artist_inspiration", ""),
+            }
+            response = await asyncio.to_thread(
+                lambda: requests.post(
+                    MUSICGEN_API_URL,
+                    json=provider_payload,
+                    headers=headers,
+                    timeout=120,
+                )
+            )
+            if response.status_code >= 400:
+                logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
+            else:
+                data = response.json() if response.content else {}
+                audio_url = _extract_audio_url(data if isinstance(data, dict) else {})
+                if audio_url:
+                    duration = int(data.get("duration_seconds") or song_payload.get("duration_seconds") or 30)
+                    return audio_url, duration, False, "external_music_provider"
+                logger.warning("Music provider response missing audio url: %s", str(data)[:300])
+        except Exception as exc:
+            logger.warning("Music provider exception: %s", exc)
+
+    selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
+    used_audio_urls.add(selected["url"])
+    return selected["url"], selected["duration"], True, "curated_demo_library"
 
 def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate) -> float:
     """Calculate accuracy percentage of selected audio against input parameters
@@ -481,71 +583,52 @@ def enhance_video_generation_params(song_data: dict, video_style: str = "") -> d
     }
     return params
 
-# ==================== AI Suggestion Engine (Real GPT-5.2) ====================
+# ==================== AI Suggestion Engine (OpenAI) ====================
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
-    """Generate REAL, DIVERSE, MUSIC-SPECIFIC AI suggestions using GPT-5.2 with advanced validation"""
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="AI service not configured")
-    
-    uniqueness_seed = generate_uniqueness_seed()
-    
-    # Music-specific system prompt emphasizing real outputs (not poetry, stories, etc.)
-    system_prompt = f"""You are a world-class music production professional with 20+ years in the industry.
-You have deep knowledge of ALL musical genres, languages, cultures, and production techniques.
-You're inspired by platforms like Suno.ai, Mureka, Splice, and leading music professionals worldwide.
+    """Generate diverse, production-ready, music-specific suggestions."""
+    if not openai_client:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY is missing. Configure it in backend .env for AI suggestions.",
+        )
 
-CRITICAL MUSIC-FIRST RULES:
-1. ONLY generate MUSIC-related suggestions - NEVER poetry, stories, or non-music concepts
-2. Every response MUST be specific, actionable, and production-ready
-3. Reference REAL production techniques, equipment, and sonic approaches
-4. Draw from genuine global music knowledge - all genres, languages, and cultures
-5. Be highly diverse - never repeat similar suggestions twice
-6. Think like a Grammy-winning producer, not a creative writer
-7. Ensure suggestions could actually guide real music creation
-8. NEVER use vague, generic, or poetic language for music fields
-9. Ground all suggestions in REAL musical production knowledge
+    system_prompt = (
+        "You are a world-class music producer. Respond ONLY with music-creation guidance. "
+        "Never return stories or generic prose. Use specific sonic and production language."
+    )
 
-For music genres and descriptions: Use technical production terminology.
-For titles and concepts: Ensure they're music-centric, not abstract fiction.
-For languages: Choose based on phonetic beauty and musical tradition.
-Uniqueness seed: {uniqueness_seed}
-
-Always validate: Would a professional producer find this useful and actionable?"""
-
-    try:
-        # Use session-based diversity to ensure completely different responses
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"suggest-{field}-{uniqueness_seed}-{uuid.uuid4()}",
-            system_message=system_prompt
-        ).with_model("openai", "gpt-5.2")
-        
+    for _ in range(3):
+        uniqueness_seed = generate_uniqueness_seed()
         prompt = build_suggestion_prompt(field, current_value, context, uniqueness_seed)
-        user_message = UserMessage(text=prompt)
-        response = await chat.send_message(user_message)
-        
-        suggestion = response.strip()
-        
-        # Rigorous post-processing validation - FILTER OUT NON-MUSIC OUTPUTS
-        if suggestion:
-            # Validate music-specificity for non-list fields
-            if field in ["music_prompt", "lyrics", "video_style"]:
+        try:
+            response = await asyncio.to_thread(
+                lambda: openai_client.chat.completions.create(
+                    model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.95,
+                    max_tokens=280,
+                )
+            )
+            suggestion = (response.choices[0].message.content or "").strip()
+            if field in ["music_prompt", "lyrics", "video_style", "title"]:
                 suggestion = validate_music_specific_suggestion(field, suggestion)
-            
-            # For genres and languages, ensure valid format
             if field in ["genres", "vocal_languages"]:
                 suggestion = validate_list_suggestion(field, suggestion)
-            
-            # Ensure no multi-line poetry/stories slipped through
-            if "\n\n" in suggestion:
-                # Multiple paragraphs likely means non-music content
+            if suggestion and "\n\n" in suggestion:
                 suggestion = suggestion.split("\n\n")[0].strip()
-        
-        return suggestion
-    except Exception as e:
-        logger.error(f"AI suggestion error: {e}")
-        raise HTTPException(status_code=500, detail=f"AI suggestion failed: {str(e)}")
+            if suggestion and _remember_suggestion(field, suggestion):
+                return suggestion
+        except Exception as e:
+            logger.error(f"AI suggestion error for {field}: {e}")
+
+    raise HTTPException(
+        status_code=502,
+        detail="AI suggestion failed after multiple attempts. Check OPENAI_API_KEY and model access.",
+    )
 
 def validate_music_specific_suggestion(field: str, text: str) -> str:
     """Validate that suggestions are music-specific, not poetry or stories"""
@@ -661,55 +744,44 @@ def validate_list_suggestion(field: str, text: str) -> str:
     return text
 
 async def generate_lyrics(music_prompt: str, genres: list, languages: list, title: str = "") -> str:
-    """Generate creative lyrics based on music description, genres, and languages"""
-    if not EMERGENT_LLM_KEY:
-        return ""  # Silently fail for lyrics generation
-    
+    """Generate singable lyrics aligned to genre, language, and prompt."""
+    if not openai_client:
+        return ""
+
     try:
-        system_prompt = """You are a Grammy-winning lyricist and songwriter with expertise in multiple languages and musical genres.
-        
-CRITICAL RULES FOR LYRICS:
-1. Create authentic, emotionally resonant lyrics that match the musical style
-2. Use vivid imagery and poetic language
-3. Adapt linguistic quality to match the language
-4. Consider cultural context and authenticity
-5. Write in the specified language(s)
-6. Create lyrics that a professional vocalist would enjoy performing
-7. Structure as verse-chorus or other appropriate format
-
-Always provide complete, singable lyrics - not just themes or concepts."""
-
         languages_str = ", ".join(languages) if languages else "English"
-        genres_str = ", ".join(genres) if genres else "pop"
-        title_ref = f"for '{title}'" if title else ""
-        
-        lyrics_prompt = f"""Write complete, emotionally engaging lyrics {title_ref} for a {genres_str} song.
-
-Music Description: {music_prompt}
+        genres_str = ", ".join(genres) if genres else "Pop"
+        title_ref = f" for '{title}'" if title else ""
+        prompt = f"""
+Write complete recording-ready lyrics{title_ref}.
+Music description: {music_prompt}
+Genres: {genres_str}
+Language(s): {languages_str}
 
 Requirements:
-- Language(s): {languages_str}
-- Style: Match the mood and energy of the music description
-- Format: Verse 1 → Chorus → Verse 2 → Chorus → Bridge (optional) → Final Chorus
-- Length: 3-4 verses and 2-3 chorus repetitions
-- Authenticity: Create lyrics that feel natural and singable
-- Imagery: Use vivid, specific imagery that connects to the musical theme
-
-Write only the lyrics, no explanations. Make them professional and ready for recording."""
-
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"lyrics-{uuid.uuid4()}",
-            system_message=system_prompt
-        ).with_model("openai", "gpt-5.2")
-        
-        user_message = UserMessage(text=lyrics_prompt)
-        response = await chat.send_message(user_message)
-        
-        return response.strip() if response else ""
+- Structure: Verse -> Chorus -> Verse -> Chorus -> Bridge -> Final Chorus
+- Keep lyrics singable and emotionally coherent
+- Avoid filler lines
+- Return ONLY the lyrics text
+"""
+        response = await asyncio.to_thread(
+            lambda: openai_client.chat.completions.create(
+                model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a professional multilingual lyricist writing record-ready lyrics.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.9,
+                max_tokens=800,
+            )
+        )
+        return (response.choices[0].message.content or "").strip()
     except Exception as e:
         logger.error(f"Lyrics generation error: {e}")
-        return ""  # Return empty string if lyrics generation fails
+        return ""
 
 def build_suggestion_prompt(field: str, current_value: str, context: dict, seed: str) -> str:
     context_parts = []
@@ -978,13 +1050,14 @@ async def create_song(song_data: SongCreate):
         except:
             title = f"Track {uuid.uuid4().hex[:6].upper()}"
     
-    # Select appropriate audio from library
-    audio_data = select_audio_for_genres(song_data.genres)
-    audio_url = audio_data["url"]
-    actual_duration = audio_data["duration"]
-    
-    # Enhance audio quality with professional parameters
-    audio_data = enhance_audio_quality_metadata(audio_data, song_data.__dict__)
+    # Generate real track (if provider configured) or fallback to curated demo library
+    audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(song_data.model_dump())
+    audio_data = {
+        "url": audio_url,
+        "duration": actual_duration,
+        "title": title,
+    }
+    audio_data = enhance_audio_quality_metadata(audio_data, song_data.model_dump())
     
     # Calculate accuracy of audio selection
     accuracy_percentage = calculate_audio_accuracy(audio_data, song_data)
@@ -1037,7 +1110,8 @@ async def create_song(song_data: SongCreate):
         "album_id": song_data.album_id,
         "user_id": song_data.user_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "is_demo": True,
+        "is_demo": is_demo,
+        "generation_provider": generation_provider,
         # Quality enhancement parameters
         "audio_quality": audio_data.get("quality_score", 65),
         "audio_bitrate": audio_data.get("bitrate", "320k"),
@@ -1057,29 +1131,53 @@ async def create_song(song_data: SongCreate):
 
 @api_router.post("/albums/create")
 async def create_album(album_data: AlbumCreate):
-    if not album_data.music_prompt or not album_data.music_prompt.strip():
-        raise HTTPException(status_code=422, detail="Music prompt is required")
-    
+    has_track_inputs = len(album_data.album_songs) > 0
+    if not has_track_inputs and not (album_data.music_prompt or "").strip():
+        raise HTTPException(status_code=422, detail="Album prompt or per-track prompts are required")
+
+    if has_track_inputs:
+        invalid_tracks = [
+            idx + 1 for idx, track in enumerate(album_data.album_songs)
+            if not (track.music_prompt or "").strip()
+        ]
+        if invalid_tracks:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Music prompt is required for album tracks: {', '.join(map(str, invalid_tracks))}",
+            )
+
     album_id = str(uuid.uuid4())
-    
-    # Generate title if not provided
-    title = album_data.title
+    num_tracks = len(album_data.album_songs) if has_track_inputs else album_data.num_songs
+    album_prompt = (album_data.music_prompt or "").strip()
+    if not album_prompt and has_track_inputs:
+        album_prompt = " | ".join([track.music_prompt for track in album_data.album_songs[:3]])
+
+    combined_genres = list(album_data.genres)
+    if has_track_inputs:
+        for track in album_data.album_songs:
+            for genre in track.genres:
+                if genre not in combined_genres:
+                    combined_genres.append(genre)
+
+    title = (album_data.title or "").strip()
     if not title:
         try:
-            title = await generate_ai_suggestion("title", "", {
-                "music_prompt": album_data.music_prompt,
-                "genres": album_data.genres
-            })
-        except:
+            title = await generate_ai_suggestion(
+                "title",
+                "",
+                {"music_prompt": album_prompt, "genres": combined_genres},
+            )
+        except Exception:
             title = f"Album {uuid.uuid4().hex[:6].upper()}"
-    
-    cover_art_url = select_cover_art(album_data.genres)
-    
+
+    cover_art_url = select_cover_art(combined_genres)
+    created_at = datetime.now(timezone.utc).isoformat()
+
     album_doc = {
         "id": album_id,
         "title": title,
-        "music_prompt": album_data.music_prompt,
-        "genres": album_data.genres,
+        "music_prompt": album_prompt,
+        "genres": combined_genres,
         "vocal_languages": album_data.vocal_languages,
         "lyrics": album_data.lyrics or "",
         "artist_inspiration": album_data.artist_inspiration or "",
@@ -1087,88 +1185,107 @@ async def create_album(album_data: AlbumCreate):
         "video_style": album_data.video_style or "",
         "cover_art_url": cover_art_url,
         "user_id": album_data.user_id,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "num_songs": num_tracks,
+        "created_at": created_at,
     }
-    
     await db.albums.insert_one(album_doc)
-    # Remove MongoDB _id field for JSON serialization
-    album_doc.pop('_id', None)
-    
-    # Generate tracks with variation
+    album_doc.pop("_id", None)
+
     songs = []
     used_audio_urls = set()
-    
     track_moods = ["energetic opener", "introspective", "building momentum", "peak energy", "reflective closer"]
-    
-    for i in range(album_data.num_songs):
-        mood_variation = track_moods[i % len(track_moods)]
-        
-        # Generate unique track title
-        try:
-            track_title = await generate_ai_suggestion("title", "", {
-                "music_prompt": f"{album_data.music_prompt} - {mood_variation}",
-                "genres": album_data.genres
-            })
-        except:
-            track_title = f"{title} - Track {i + 1}"
-        
-        audio_data = select_audio_for_genres(album_data.genres, used_audio_urls)
-        used_audio_urls.add(audio_data["url"])
-        
-        # Generate lyrics for this track if vocals are included
-        track_lyrics = album_data.lyrics or ""
-        if not track_lyrics and album_data.vocal_languages and "Instrumental" not in album_data.vocal_languages:
+
+    for i in range(num_tracks):
+        if has_track_inputs:
+            track_input = album_data.album_songs[i]
+            track_prompt = track_input.music_prompt.strip()
+            track_genres = track_input.genres or combined_genres
+            track_languages = track_input.vocal_languages or album_data.vocal_languages
+            track_lyrics = track_input.lyrics or album_data.lyrics or ""
+            track_artist_inspiration = track_input.artist_inspiration or album_data.artist_inspiration or ""
+            track_video_style = track_input.video_style or album_data.video_style or ""
+            desired_duration = track_input.duration_seconds or 25
+            track_title = (track_input.title or "").strip()
+        else:
+            mood_variation = track_moods[i % len(track_moods)]
+            track_prompt = f"{album_prompt} ({mood_variation})"
+            track_genres = combined_genres
+            track_languages = album_data.vocal_languages
+            track_lyrics = album_data.lyrics or ""
+            track_artist_inspiration = album_data.artist_inspiration or ""
+            track_video_style = album_data.video_style or ""
+            desired_duration = 25
+            track_title = ""
+
+        if not track_title:
+            try:
+                track_title = await generate_ai_suggestion(
+                    "title",
+                    "",
+                    {"music_prompt": track_prompt, "genres": track_genres, "track_number": i + 1},
+                )
+            except Exception:
+                track_title = f"{title} - Track {i + 1}"
+
+        if not track_lyrics and track_languages and "Instrumental" not in track_languages:
             try:
                 track_lyrics = await generate_lyrics(
-                    f"{album_data.music_prompt} ({mood_variation})",
-                    album_data.genres,
-                    album_data.vocal_languages,
-                    track_title
+                    track_prompt,
+                    track_genres,
+                    track_languages,
+                    track_title,
                 )
             except Exception as e:
-                logger.warning(f"Failed to generate lyrics for album track {i + 1}: {e}")
-        
+                logger.warning("Failed to generate lyrics for album track %s: %s", i + 1, e)
+
+        audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
+            {
+                "title": track_title,
+                "music_prompt": track_prompt,
+                "genres": track_genres,
+                "lyrics": track_lyrics,
+                "vocal_languages": track_languages,
+                "duration_seconds": desired_duration,
+                "artist_inspiration": track_artist_inspiration,
+            },
+            used_audio_urls,
+        )
+
         song_doc = {
             "id": str(uuid.uuid4()),
+            "track_number": i + 1,
             "title": track_title,
-            "music_prompt": f"{album_data.music_prompt} ({mood_variation})",
-            "genres": album_data.genres,
-            "duration_seconds": audio_data["duration"],
-            "vocal_languages": album_data.vocal_languages,
+            "music_prompt": track_prompt,
+            "genres": track_genres,
+            "duration_seconds": actual_duration or desired_duration,
+            "vocal_languages": track_languages,
             "lyrics": track_lyrics,
-            "artist_inspiration": album_data.artist_inspiration or "",
-            "generate_video": False,
-            "video_style": "",
-            "audio_url": audio_data["url"],
+            "artist_inspiration": track_artist_inspiration,
+            "generate_video": album_data.generate_video,
+            "video_style": track_video_style,
+            "audio_url": audio_url,
             "video_url": None,
             "cover_art_url": cover_art_url,
             "album_id": album_id,
             "user_id": album_data.user_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "is_demo": True
+            "is_demo": is_demo,
+            "generation_provider": generation_provider,
         }
-        
+
         await db.songs.insert_one(song_doc)
-        # Remove MongoDB _id field for JSON serialization
-        song_doc.pop('_id', None)
-        songs.append({
-            "id": song_doc["id"],
-            "title": song_doc["title"],
-            "audio_url": song_doc["audio_url"],
-            "video_url": song_doc["video_url"],
-            "cover_art_url": song_doc["cover_art_url"],
-            "duration_seconds": song_doc["duration_seconds"]
-        })
-    
+        song_doc.pop("_id", None)
+        songs.append(song_doc)
+
     return {
         "id": album_id,
         "title": title,
-        "music_prompt": album_data.music_prompt,
-        "genres": album_data.genres,
+        "music_prompt": album_prompt,
+        "genres": combined_genres,
         "cover_art_url": cover_art_url,
         "user_id": album_data.user_id,
-        "created_at": album_doc['created_at'],
-        "songs": songs
+        "created_at": created_at,
+        "songs": songs,
     }
 
 # ==================== Data Retrieval ====================
@@ -1176,11 +1293,13 @@ async def create_album(album_data: AlbumCreate):
 @api_router.get("/songs/user/{user_id}")
 async def get_user_songs(user_id: str):
     songs = await db.songs.find({"user_id": user_id, "album_id": None}, {"_id": 0}).to_list(100)
+    songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
     return songs
 
 @api_router.get("/albums/user/{user_id}")
 async def get_user_albums(user_id: str):
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
+    albums.sort(key=lambda a: a.get("created_at", ""), reverse=True)
     album_ids = [album['id'] for album in albums]
     if album_ids:
         all_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
@@ -1191,13 +1310,17 @@ async def get_user_albums(user_id: str):
                 songs_by_album[aid] = []
             songs_by_album[aid].append(song)
         for album in albums:
-            album['songs'] = songs_by_album.get(album['id'], [])
+            album_songs = songs_by_album.get(album['id'], [])
+            album_songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+            album['songs'] = album_songs
     return albums
 
 @api_router.get("/dashboard/{user_id}")
 async def get_dashboard(user_id: str):
     songs = await db.songs.find({"user_id": user_id, "album_id": None}, {"_id": 0}).to_list(100)
     albums = await db.albums.find({"user_id": user_id}, {"_id": 0}).to_list(100)
+    songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+    albums.sort(key=lambda a: a.get("created_at", ""), reverse=True)
     album_ids = [album['id'] for album in albums]
     if album_ids:
         all_album_songs = await db.songs.find({"album_id": {"$in": album_ids}}, {"_id": 0}).to_list(500)
@@ -1208,7 +1331,9 @@ async def get_dashboard(user_id: str):
                 songs_by_album[aid] = []
             songs_by_album[aid].append(song)
         for album in albums:
-            album['songs'] = songs_by_album.get(album['id'], [])
+            album_songs = songs_by_album.get(album['id'], [])
+            album_songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+            album['songs'] = album_songs
     return {"songs": songs, "albums": albums}
 
 # ==================== Video Generation ====================
@@ -1624,11 +1749,19 @@ async def get_video_styles():
 
 @api_router.get("/")
 async def root():
-    return {"message": "Muzify API - AI Music Creation"}
+    return {"message": "MuseWave API - AI Music Creation"}
 
 @api_router.get("/health")
 async def api_health():
-    return {"status": "healthy", "version": "2.1", "mode": "demo", "features": ["ai_suggestions", "curated_audio", "knowledge_bases"]}
+    return {
+        "status": "healthy",
+        "version": "3.0",
+        "mode": "hybrid",
+        "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
+        "music_generation": "configured" if MUSICGEN_API_URL else "fallback_curated_library",
+        "video_generation": "configured" if REPLICATE_API_TOKEN else "fallback_sample_video",
+        "features": ["ai_suggestions", "lyrics_synthesis", "album_per_track_inputs", "knowledge_bases"],
+    }
 
 app.include_router(api_router)
 
@@ -1675,4 +1808,4 @@ async def serve_react_app(full_path: str):
         return FileResponse(index_file)
     
     # If no build directory, return API info
-    return {"message": "Muzify API - AI Music Creation", "note": "Frontend not built yet"}
+    return {"message": "MuseWave API - AI Music Creation", "note": "Frontend not built yet"}

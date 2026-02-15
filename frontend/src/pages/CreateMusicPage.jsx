@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -6,7 +6,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Slider } from "../components/ui/slider";
 import { Switch } from "../components/ui/switch";
 import { Badge } from "../components/ui/badge";
-import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Search, X, Volume2, ChevronDown } from "lucide-react";
+import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Search, X, ChevronDown, Film } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
 import { API } from "../App";
@@ -30,6 +30,7 @@ export default function CreateMusicPage({ user }) {
   const [lastSuggestion, setLastSuggestion] = useState({});
   const [expandedSongIndex, setExpandedSongIndex] = useState(null);
   const [songReference, setSongReference] = useState(null); // Track which song was used as reference
+  const [albumVideoLoading, setAlbumVideoLoading] = useState(false);
 
   const [formData, setFormData] = useState({
     title: "",
@@ -412,9 +413,23 @@ export default function CreateMusicPage({ user }) {
   };
 
   const handleSubmit = async () => {
-    if (!formData.musicPrompt.trim()) {
+    if (mode === "single" && !formData.musicPrompt.trim()) {
       toast.error("Please describe your music idea");
       return;
+    }
+    if (mode === "album") {
+      if (!formData.albumSongs.length) {
+        toast.error("Add at least one track to the album");
+        return;
+      }
+      const missingTrackPrompts = formData.albumSongs
+        .map((song, index) => ({ index, prompt: song.musicPrompt?.trim() }))
+        .filter((item) => !item.prompt)
+        .map((item) => item.index + 1);
+      if (missingTrackPrompts.length > 0) {
+        toast.error(`Please enter music description for track(s): ${missingTrackPrompts.join(", ")}`);
+        return;
+      }
     }
 
     setLoading(true);
@@ -422,10 +437,17 @@ export default function CreateMusicPage({ user }) {
 
     try {
       const endpoint = mode === "single" ? "/songs/create" : "/albums/create";
+      const albumGenres = Array.from(
+        new Set(
+          formData.albumSongs.flatMap((song) => song.selectedGenres || []).concat(formData.selectedGenres || [])
+        )
+      );
       const payload = {
         title: formData.title,
-        music_prompt: formData.musicPrompt,
-        genres: formData.selectedGenres,
+        music_prompt: mode === "single"
+          ? formData.musicPrompt
+          : (formData.musicPrompt || formData.albumSongs[0]?.musicPrompt || ""),
+        genres: mode === "single" ? formData.selectedGenres : albumGenres,
         vocal_languages: formData.vocalLanguages,
         lyrics: formData.lyrics,
         artist_inspiration: formData.artistInspiration,
@@ -434,7 +456,19 @@ export default function CreateMusicPage({ user }) {
         user_id: user.id,
         ...(mode === "single" 
           ? { duration_seconds: formData.durationSeconds, mode: "single" }
-          : { num_songs: formData.numSongs }
+          : {
+              num_songs: formData.albumSongs.length,
+              album_songs: formData.albumSongs.map((song) => ({
+                title: song.title || "",
+                music_prompt: song.musicPrompt || "",
+                genres: song.selectedGenres || [],
+                duration_seconds: song.durationSeconds || 25,
+                vocal_languages: song.vocalLanguages || [],
+                lyrics: song.lyrics || "",
+                artist_inspiration: song.artistInspiration || "",
+                video_style: song.videoStyle || "",
+              })),
+            }
         ),
       };
 
@@ -461,14 +495,16 @@ export default function CreateMusicPage({ user }) {
     setPlayingTrack(trackId);
   }, [audioRef, playingTrack]);
 
-  const AISuggestIndicator = ({ field }) => {
-    if (!aiSuggestedFields.has(field)) return null;
-    return (
-      <div className="absolute -top-2 -right-2 flex items-center gap-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white px-2 py-1 rounded-full text-xs font-semibold animate-pulse">
-        <Sparkles className="w-3 h-3" />
-        AI Suggested
-      </div>
-    );
+  const generateAlbumVideos = async (albumId) => {
+    try {
+      setAlbumVideoLoading(true);
+      const response = await axios.post(`${API}/albums/${albumId}/generate-videos?user_id=${user.id}`);
+      toast.success(response.data?.message || "Video generation started");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to generate videos");
+    } finally {
+      setAlbumVideoLoading(false);
+    }
   };
 
   const SuggestButton = ({ field }) => (
@@ -818,6 +854,52 @@ export default function CreateMusicPage({ user }) {
                         </div>
                       </div>
 
+                      {/* Song Artist Inspiration */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs uppercase tracking-widest text-muted-foreground">Artist Inspiration</Label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleAISuggest("artist_inspiration", idx)}
+                            disabled={suggestingField === "artist_inspiration"}
+                            className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                          >
+                            {suggestingField === "artist_inspiration" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                          </Button>
+                        </div>
+                        <Input
+                          placeholder="Artists, producers, vocal references..."
+                          value={song.artistInspiration}
+                          onChange={(e) => updateAlbumSong(idx, { artistInspiration: e.target.value })}
+                          className="h-11 bg-secondary/40 border-white/10"
+                        />
+                      </div>
+
+                      {/* Song Video Style */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs uppercase tracking-widest text-muted-foreground">Video Style</Label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleAISuggest("video_style", idx)}
+                            disabled={suggestingField === "video_style"}
+                            className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
+                          >
+                            {suggestingField === "video_style" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                          </Button>
+                        </div>
+                        <Input
+                          placeholder="Visual direction for this specific track"
+                          value={song.videoStyle}
+                          onChange={(e) => updateAlbumSong(idx, { videoStyle: e.target.value })}
+                          className="h-11 bg-secondary/40 border-white/10"
+                        />
+                      </div>
+
                       {/* Close Button */}
                       <Button
                         type="button"
@@ -833,184 +915,6 @@ export default function CreateMusicPage({ user }) {
               ))}
             </div>
           )}
-              {/* Song Title */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Track Title</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("title", idx)}
-                    disabled={suggestingField === "title"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "title" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <Input
-                  placeholder="e.g., Midnight Dreams"
-                  value={song.title}
-                  onChange={(e) => updateAlbumSong(idx, { title: e.target.value })}
-                  className="h-12 text-lg bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
-                />
-              </div>
-
-              {/* Song Prompt */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Track Description</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("music_prompt", idx)}
-                    disabled={suggestingField === "music_prompt"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "music_prompt" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <Textarea
-                  placeholder="Describe the mood, style, and feel of this specific track..."
-                  value={song.musicPrompt}
-                  onChange={(e) => updateAlbumSong(idx, { musicPrompt: e.target.value })}
-                  className="min-h-[100px] text-base leading-relaxed bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary resize-none p-4"
-                />
-              </div>
-
-              {/* Song Duration */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Duration</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("duration", idx)}
-                    disabled={suggestingField === "duration"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "duration" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <div className="flex items-center gap-4">
-                  <Input
-                    value={formatDuration(song.durationSeconds)}
-                    onChange={(e) => {
-                      const parsed = parseDurationInput(e.target.value);
-                      if (parsed !== null) {
-                        updateAlbumSong(idx, { durationSeconds: parsed });
-                      }
-                    }}
-                    className="w-32 h-11 font-mono text-center bg-secondary/50"
-                    placeholder="e.g. 1:30"
-                  />
-                  <span className="text-sm text-muted-foreground">Format: 30s, 1:30, or 1m 30s</span>
-                </div>
-              </div>
-
-              {/* Song Lyrics */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Lyrics/Concept</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("lyrics", idx)}
-                    disabled={suggestingField === "lyrics"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "lyrics" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <Textarea
-                  placeholder="Enter lyrics, lyrical themes, or concepts for this track..."
-                  value={song.lyrics}
-                  onChange={(e) => updateAlbumSong(idx, { lyrics: e.target.value })}
-                  className="min-h-[80px] text-base leading-relaxed bg-card border border-white/10 rounded-xl focus-visible:ring-1 focus-visible:ring-primary resize-none p-4"
-                />
-              </div>
-
-              {/* Song Genres */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Genres</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("genres", idx)}
-                    disabled={suggestingField === "genres"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "genres" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {genres.map((genre) => (
-                    <Badge
-                      key={genre}
-                      variant={song.selectedGenres.includes(genre) ? "default" : "outline"}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        const selected = song.selectedGenres.includes(genre)
-                          ? song.selectedGenres.filter((g) => g !== genre)
-                          : [...song.selectedGenres, genre];
-                        updateAlbumSong(idx, { selectedGenres: selected });
-                      }}
-                    >
-                      {genre}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-
-              {/* Song Languages */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Vocal Languages</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleAISuggest("vocal_languages", idx)}
-                    disabled={suggestingField === "vocal_languages"}
-                    className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
-                  >
-                    {suggestingField === "vocal_languages" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {languages.map((lang) => (
-                    <Badge
-                      key={lang}
-                      variant={song.vocalLanguages.includes(lang) ? "default" : "outline"}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        const selected = song.vocalLanguages.includes(lang)
-                          ? song.vocalLanguages.filter((l) => l !== lang)
-                          : [...song.vocalLanguages, lang];
-                        updateAlbumSong(idx, { vocalLanguages: selected });
-                      }}
-                    >
-                      {lang}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-
-              {/* Close Button */}
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setExpandedSongIndex(null)}
-                className="w-full text-muted-foreground hover:text-foreground"
-              >
-                Done Configuring Track {idx + 1}
-              </Button>
-
           {/* Title */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1028,6 +932,8 @@ export default function CreateMusicPage({ user }) {
             />
           </div>
 
+          {mode === "single" && (
+          <>
           {/* Music Prompt */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1307,6 +1213,8 @@ export default function CreateMusicPage({ user }) {
               </div>
             )}
           </div>
+          </>
+          )}
 
           {/* Video Toggle */}
           <div className="flex items-center justify-between p-5 rounded-2xl bg-card border border-white/5">
@@ -1325,11 +1233,13 @@ export default function CreateMusicPage({ user }) {
           {formData.generateVideo && (
             <div className="space-y-3 animate-fade-in">
               <div className="flex items-center justify-between">
-                <Label className="text-xs uppercase tracking-widest text-muted-foreground">Video Style</Label>
+                <Label className="text-xs uppercase tracking-widest text-muted-foreground">
+                  {mode === "single" ? "Video Style" : "Default Video Style"}
+                </Label>
                 <SuggestButton field="video_style" />
               </div>
               <Input
-                placeholder="Describe the visual style..."
+                placeholder={mode === "single" ? "Describe the visual style..." : "Used when a track does not specify video style"}
                 value={formData.videoStyle}
                 onChange={(e) => setFormData({ ...formData, videoStyle: e.target.value })}
                 className="h-12 bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
@@ -1424,6 +1334,21 @@ export default function CreateMusicPage({ user }) {
                           <Download className="w-4 h-4" />
                           Download Album
                         </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => generateAlbumVideos(result.data.id)}
+                          disabled={albumVideoLoading}
+                          className="gap-2"
+                        >
+                          {albumVideoLoading ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Film className="w-4 h-4" />
+                          )}
+                          Generate Videos
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -1460,6 +1385,8 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
       if (response.data.video_url) {
         setVideoUrl(response.data.video_url);
         toast.success("Video generated successfully!");
+      } else if (response.data.status === "processing") {
+        toast.success(response.data.message || "Video generation started");
       }
     } catch (error) {
       toast.error(error.response?.data?.detail || "Failed to generate video");
@@ -1495,6 +1422,9 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
           {index && <span className="text-xs text-muted-foreground font-mono">Track {index}</span>}
           <h4 className="font-medium truncate">{track.title}</h4>
           <p className="text-sm text-muted-foreground font-mono">{formatTime(track.duration_seconds)}</p>
+          {track.lyrics && (
+            <p className="text-xs text-muted-foreground line-clamp-2 mt-1">{track.lyrics}</p>
+          )}
         </div>
 
         {/* Actions */}

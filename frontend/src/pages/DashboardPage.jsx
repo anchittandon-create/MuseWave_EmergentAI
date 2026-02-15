@@ -26,7 +26,12 @@ export default function DashboardPage({ user }) {
       // Sort albums by created_at descending (newest first)
       const sortedAlbums = (response.data.albums || []).sort(
         (a, b) => new Date(b.created_at) - new Date(a.created_at)
-      );
+      ).map((album) => ({
+        ...album,
+        songs: (album.songs || []).sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+        ),
+      }));
       setData({ songs: sortedSongs, albums: sortedAlbums });
     } catch (error) {
       console.error("Failed to fetch dashboard:", error);
@@ -399,57 +404,82 @@ export default function DashboardPage({ user }) {
                       {album.songs?.map((track, i) => (
                         <div
                           key={track.id}
-                          className="flex items-center gap-4 px-5 py-4 hover:bg-white/[0.02] transition-colors border-b border-white/5 last:border-b-0"
+                          className="px-5 py-4 hover:bg-white/[0.02] transition-colors border-b border-white/5 last:border-b-0"
                         >
-                          <span className="w-8 text-center text-muted-foreground font-mono text-sm">{i + 1}</span>
-                          <button
-                            onClick={() => playTrack(track.audio_url, track.id)}
-                            className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center hover:bg-primary/20 transition-colors flex-shrink-0"
-                            data-testid={`play-track-${track.id}`}
-                          >
-                            {playingTrack === track.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{track.title}</p>
-                            {track.lyrics && <p className="text-xs text-muted-foreground line-clamp-1">{track.lyrics}</p>}
-                          </div>
-                          <span className="text-sm text-muted-foreground font-mono flex-shrink-0">{formatTime(track.duration_seconds)}</span>
-                          {track.video_url ? (
+                          <div className="flex items-start gap-4">
+                            <span className="w-8 text-center text-muted-foreground font-mono text-sm pt-2">{i + 1}</span>
                             <button
-                              onClick={() => setVideoModal({ url: track.video_url, title: track.title, thumbnail: track.video_thumbnail })}
-                              className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
-                              title="Watch video"
-                              data-testid={`watch-video-track-${track.id}`}
+                              onClick={() => playTrack(track.audio_url, track.id)}
+                              className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center hover:bg-primary/20 transition-colors flex-shrink-0 mt-1"
+                              data-testid={`play-track-${track.id}`}
                             >
-                              <Film className="w-4 h-4 text-primary" />
+                              {playingTrack === track.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                             </button>
-                          ) : track.video_status === "processing" ? (
-                            <button className="p-2 rounded-lg flex-shrink-0" title="Processing..." disabled>
-                              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => generateSongVideo(track.id)}
-                              className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
-                              title="Generate video"
-                              disabled={generatingVideo[track.id]}
-                              data-testid={`generate-video-track-${track.id}`}
-                            >
-                              {generatingVideo[track.id] ? (
-                                <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-                              ) : (
-                                <Film className="w-4 h-4 text-muted-foreground hover:text-primary" />
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium truncate">{track.title}</p>
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-1">
+                                <span>{formatDate(track.created_at || album.created_at)}</span>
+                                <span>•</span>
+                                <span className="font-mono">{formatTime(track.duration_seconds || 0)}</span>
+                                {track.vocal_languages?.length > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{track.vocal_languages.join(", ")}</span>
+                                  </>
+                                )}
+                              </div>
+                              {track.genres?.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {track.genres.slice(0, 4).map((genre) => (
+                                    <span key={genre} className="text-[10px] px-2 py-0.5 rounded-full bg-secondary">
+                                      {genre}
+                                    </span>
+                                  ))}
+                                </div>
                               )}
-                            </button>
-                          )}
-                          <a
-                            href={track.audio_url}
-                            download
-                            className="p-2 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
-                            data-testid={`download-track-${track.id}`}
-                          >
-                            <Download className="w-4 h-4 text-muted-foreground" />
-                          </a>
+                              {track.lyrics && (
+                                <p className="text-xs text-muted-foreground line-clamp-2 mt-2">{track.lyrics}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {track.video_url ? (
+                                <button
+                                  onClick={() => setVideoModal({ url: track.video_url, title: track.title, thumbnail: track.video_thumbnail })}
+                                  className="p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                  title="Watch video"
+                                  data-testid={`watch-video-track-${track.id}`}
+                                >
+                                  <Film className="w-4 h-4 text-primary" />
+                                </button>
+                              ) : track.video_status === "processing" ? (
+                                <button className="p-2 rounded-lg" title="Processing..." disabled>
+                                  <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => generateSongVideo(track.id)}
+                                  className="p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                  title="Generate video"
+                                  disabled={generatingVideo[track.id]}
+                                  data-testid={`generate-video-track-${track.id}`}
+                                >
+                                  {generatingVideo[track.id] ? (
+                                    <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                                  ) : (
+                                    <Film className="w-4 h-4 text-muted-foreground hover:text-primary" />
+                                  )}
+                                </button>
+                              )}
+                              <a
+                                href={track.audio_url}
+                                download
+                                className="p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                data-testid={`download-track-${track.id}`}
+                              >
+                                <Download className="w-4 h-4 text-muted-foreground" />
+                              </a>
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>
