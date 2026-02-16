@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { API } from "../App";
 import { Button } from "../components/ui/button";
@@ -6,7 +6,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
-import { Shield, Users, Music, Disc, Calendar, Search, PlayCircle, Download, FileText, X } from "lucide-react";
+import { Shield, Users, Music, Disc, Calendar, Search, PlayCircle, Download, FileText, X, Play, Pause, Rewind, FastForward } from "lucide-react";
 
 const TAB_CONFIG = [
   { id: "tracks", label: "All Tracks" },
@@ -380,17 +380,14 @@ export default function MasterDashboardPage({ user }) {
         </div>
 
         <div className="glass rounded-2xl overflow-auto" data-testid="master-results-table">
-          <table className="w-full min-w-[1320px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead className="bg-secondary/40">
               <tr>
                 <th className="text-left p-3 font-medium">Type</th>
                 <th className="text-left p-3 font-medium">Name</th>
-                <th className="text-left p-3 font-medium">Album</th>
                 <th className="text-left p-3 font-medium">User</th>
-                <th className="text-left p-3 font-medium">Mobile</th>
                 <th className="text-left p-3 font-medium">Created</th>
                 <th className="text-left p-3 font-medium">Duration</th>
-                <th className="text-left p-3 font-medium">Media</th>
                 <th className="text-left p-3 font-medium">Actions</th>
               </tr>
             </thead>
@@ -411,12 +408,15 @@ export default function MasterDashboardPage({ user }) {
                           className="w-10 h-10 rounded object-cover border border-white/10"
                           loading="lazy"
                         />
-                        <div className="font-medium truncate max-w-[220px]">{item.title || "-"}</div>
+                        <div>
+                          <div className="font-medium truncate max-w-[220px]">{item.title || "-"}</div>
+                          <div className="text-xs text-muted-foreground truncate max-w-[220px]">
+                            Album: {item.album_title || "-"} • Mobile: {item.user_mobile || "-"}
+                          </div>
+                        </div>
                       </div>
                     </td>
-                    <td className="p-3 text-muted-foreground truncate max-w-[220px]">{item.album_title || "-"}</td>
                     <td className="p-3">{item.user_name || "Unknown"}</td>
-                    <td className="p-3 font-mono">{item.user_mobile || "-"}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <Calendar className="w-3 h-3" />
@@ -425,22 +425,18 @@ export default function MasterDashboardPage({ user }) {
                     </td>
                     <td className="p-3">{isAlbum ? `${item.song_count || 0} tracks` : formatDuration(item.duration_seconds)}</td>
                     <td className="p-3">
-                      {!previewTrack ? (
-                        <span className="text-muted-foreground">-</span>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-8 gap-1"
-                          onClick={() => setMediaModalRecord({ ...previewTrack, title: isAlbum ? `${item.title} (Album Preview)` : previewTrack.title })}
-                        >
-                          <PlayCircle className="w-4 h-4" />
-                          Play
-                        </Button>
-                      )}
-                    </td>
-                    <td className="p-3">
                       <div className="flex items-center gap-1.5">
+                        {previewTrack ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1"
+                            onClick={() => setMediaModalRecord({ ...previewTrack, title: isAlbum ? `${item.title} (Album Preview)` : previewTrack.title })}
+                          >
+                            <PlayCircle className="w-4 h-4" />
+                            Play
+                          </Button>
+                        ) : null}
                         {!isAlbum && item.audio_url && (
                           <a href={item.audio_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
                             <Download className="w-3 h-3" />Audio
@@ -461,7 +457,7 @@ export default function MasterDashboardPage({ user }) {
               })}
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="p-6 text-center text-muted-foreground">No records matched your filters.</td>
+                  <td colSpan={6} className="p-6 text-center text-muted-foreground">No records matched your filters.</td>
                 </tr>
               )}
             </tbody>
@@ -488,6 +484,28 @@ export default function MasterDashboardPage({ user }) {
 }
 
 function MasterMediaModal({ record, onClose }) {
+  const audioRef = useRef(null);
+  const videoRef = useRef(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+
+  const seekMedia = (ref, delta) => {
+    if (!ref.current) return;
+    const next = Math.max(0, (ref.current.currentTime || 0) + delta);
+    ref.current.currentTime = next;
+  };
+
+  const togglePlayback = async (ref, setPlaying) => {
+    if (!ref.current) return;
+    if (ref.current.paused) {
+      await ref.current.play();
+      setPlaying(true);
+      return;
+    }
+    ref.current.pause();
+    setPlaying(false);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
       <div className="relative max-w-3xl w-full bg-card rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -503,7 +521,28 @@ function MasterMediaModal({ record, onClose }) {
           {record.audio_url ? (
             <div className="space-y-2">
               <p className="text-sm font-medium">Audio Player</p>
-              <audio src={record.audio_url} controls className="w-full" />
+              <audio
+                ref={audioRef}
+                src={record.audio_url}
+                controls
+                onPlay={() => setAudioPlaying(true)}
+                onPause={() => setAudioPlaying(false)}
+                className="w-full"
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(audioRef, -10)}>
+                  <Rewind className="w-3.5 h-3.5" />
+                  -10s
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => togglePlayback(audioRef, setAudioPlaying)}>
+                  {audioPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {audioPlaying ? "Pause" : "Play"}
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(audioRef, 10)}>
+                  <FastForward className="w-3.5 h-3.5" />
+                  +10s
+                </Button>
+              </div>
               <a href={record.audio_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
                 <Download className="w-4 h-4" />
                 Download Audio
@@ -518,7 +557,29 @@ function MasterMediaModal({ record, onClose }) {
           {record.video_url ? (
             <div className="space-y-2">
               <p className="text-sm font-medium">Video Player</p>
-              <video src={record.video_url} poster={record.video_thumbnail} controls className="w-full aspect-video bg-black rounded-xl" />
+              <video
+                ref={videoRef}
+                src={record.video_url}
+                poster={record.video_thumbnail}
+                controls
+                onPlay={() => setVideoPlaying(true)}
+                onPause={() => setVideoPlaying(false)}
+                className="w-full aspect-video bg-black rounded-xl"
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(videoRef, -10)}>
+                  <Rewind className="w-3.5 h-3.5" />
+                  -10s
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => togglePlayback(videoRef, setVideoPlaying)}>
+                  {videoPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {videoPlaying ? "Pause" : "Play"}
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(videoRef, 10)}>
+                  <FastForward className="w-3.5 h-3.5" />
+                  +10s
+                </Button>
+              </div>
               <a href={record.video_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
                 <Download className="w-4 h-4" />
                 Download Video
@@ -545,6 +606,7 @@ function MasterDetailsModal({ type, record, onClose }) {
     ["Lyrics", record?.lyrics],
     ["Artist Inspiration", record?.artist_inspiration],
     ["Video Style", record?.video_style],
+    ["Entropy", record?.entropy],
     ["User", record?.user_name],
     ["Mobile", record?.user_mobile],
     ["Created", formatDate(record?.created_at)],

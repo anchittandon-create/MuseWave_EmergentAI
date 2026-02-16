@@ -1,3 +1,5 @@
+import { addEntropyVariation, buildEntropyPrompt, generateEntropy } from "./entropy";
+
 const MUSICGEN_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-large";
 const PROMPT_MODEL_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large";
 
@@ -44,17 +46,33 @@ const heuristicPrompt = ({ genres = [], artistInspiration = "", description = ""
   return parts.join(". ");
 };
 
-export async function autoSuggestPrompt({ genres = [], artistInspiration = "", description = "" } = {}) {
-  const fallback = heuristicPrompt({ genres, artistInspiration, description });
+const parseGeneratedText = (data) => {
+  if (Array.isArray(data) && data[0] && typeof data[0].generated_text === "string") {
+    return data[0].generated_text;
+  }
+  if (data && typeof data.generated_text === "string") {
+    return data.generated_text;
+  }
+  return "";
+};
+
+export async function autoSuggestPrompt({ genres = [], artistInspiration = "", description = "", entropy } = {}) {
+  const suggestionEntropy = entropy || generateEntropy("suggestion");
+  const fallbackBase = heuristicPrompt({ genres, artistInspiration, description });
+  const fallback = addEntropyVariation(fallbackBase, suggestionEntropy);
 
   try {
     const headers = getAuthHeaders();
     const inputPrompt = [
       "Create one detailed music generation prompt.",
       "Keep it practical, specific, and production-focused.",
+      "Make it sonically unique and fresh.",
       `Genres: ${normalizeArrayField(genres).join(", ") || "Not specified"}`,
       `Artist inspiration: ${String(artistInspiration || "").trim() || "Not specified"}`,
       `Description: ${String(description || "").trim() || "Not specified"}`,
+      `Variation entropy: ${suggestionEntropy}`,
+      `Timestamp: ${Date.now()}`,
+      `Random factor: ${Math.random()}`,
       "Output exactly one prompt line only.",
     ].join("\n");
 
@@ -71,25 +89,19 @@ export async function autoSuggestPrompt({ genres = [], artistInspiration = "", d
     if (!contentType.includes("application/json")) return fallback;
 
     const data = await res.json();
-
-    let generated = "";
-    if (Array.isArray(data) && data[0] && typeof data[0].generated_text === "string") {
-      generated = data[0].generated_text;
-    } else if (data && typeof data.generated_text === "string") {
-      generated = data.generated_text;
-    }
-
-    generated = String(generated || "").trim();
-    return generated || fallback;
+    const generated = String(parseGeneratedText(data) || "").trim();
+    return addEntropyVariation(generated || fallbackBase, suggestionEntropy);
   } catch {
     return fallback;
   }
 }
 
-export async function generateMusicAudio({ prompt, duration }) {
+export async function generateMusicAudio({ prompt, duration, entropy }) {
   const headers = getAuthHeaders();
   const safePrompt = String(prompt || "").trim();
   const safeDuration = clampDuration(duration);
+  const entropyValue = entropy || generateEntropy("audio");
+  const finalPrompt = buildEntropyPrompt(safePrompt, entropyValue);
 
   let lastError = "MusicGen request failed";
 
@@ -98,9 +110,13 @@ export async function generateMusicAudio({ prompt, duration }) {
       method: "POST",
       headers,
       body: JSON.stringify({
-        inputs: safePrompt,
+        inputs: finalPrompt,
         parameters: {
           duration: safeDuration,
+          temperature: 1.2,
+          top_k: 250,
+          top_p: 0.98,
+          do_sample: true,
         },
       }),
       cache: "no-store",
@@ -115,6 +131,7 @@ export async function generateMusicAudio({ prompt, duration }) {
       return {
         audioBuffer,
         duration: safeDuration,
+        finalPrompt,
       };
     }
 
@@ -123,7 +140,6 @@ export async function generateMusicAudio({ prompt, duration }) {
       const errorPayload = await res.json().catch(() => ({}));
       const detail = errorPayload?.error || errorPayload?.message || "unknown error";
       lastError = `MusicGen API ${res.status}: ${detail}`;
-
       if (res.status === 503) {
         const waitSeconds = Number(errorPayload?.estimated_time || 4);
         await sleep(Math.max(1000, Math.min(waitSeconds * 1000, 15000)));

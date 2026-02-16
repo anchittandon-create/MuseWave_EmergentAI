@@ -5,6 +5,7 @@ import { uploadAudioBlob, uploadVideoBlob } from "../../../lib/blob";
 import { getMongoDb } from "../../../lib/mongodb";
 import { generateVisualizationVideo } from "../../../lib/videogen";
 import { normalizeAudioToWav, muxAudioAndVideo } from "../../../lib/mux";
+import { generateEntropy } from "../../../lib/entropy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,16 +25,18 @@ export async function POST(request) {
     const artistInspiration = typeof body?.artist_inspiration === "string" ? body.artist_inspiration : "";
     const description = typeof body?.description === "string" ? body.description : "";
 
+    const entropy = generateEntropy("project");
     let prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
     if (!prompt) {
-      prompt = await autoSuggestPrompt({ genres, artistInspiration, description });
+      prompt = await autoSuggestPrompt({ genres, artistInspiration, description, entropy });
     }
 
     const projectId = randomUUID();
 
-    const { audioBuffer: rawAudioBuffer } = await generateMusicAudio({
+    const { audioBuffer: rawAudioBuffer, finalPrompt } = await generateMusicAudio({
       prompt,
       duration,
+      entropy,
     });
 
     const wavAudioBuffer = await normalizeAudioToWav(rawAudioBuffer);
@@ -50,8 +53,8 @@ export async function POST(request) {
     });
 
     const [audioUrl, videoUrl] = await Promise.all([
-      uploadAudioBlob(projectId, wavAudioBuffer),
-      uploadVideoBlob(projectId, finalVideoBuffer),
+      uploadAudioBlob(projectId, entropy, wavAudioBuffer),
+      uploadVideoBlob(projectId, entropy, finalVideoBuffer),
     ]);
 
     const db = await getMongoDb();
@@ -59,7 +62,9 @@ export async function POST(request) {
 
     await db.collection("projects").insertOne({
       project_id: projectId,
+      entropy,
       prompt,
+      final_prompt: finalPrompt,
       audio_url: audioUrl,
       video_url: videoUrl,
       created_at: createdAt,
@@ -69,7 +74,9 @@ export async function POST(request) {
       {
         success: true,
         project_id: projectId,
+        entropy,
         prompt,
+        final_prompt: finalPrompt,
         audio_url: audioUrl,
         video_url: videoUrl,
         created_at: createdAt,

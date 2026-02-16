@@ -46,6 +46,7 @@ const promptSeed = (prompt) => {
 export async function generateVisualizationVideo({ prompt, duration }) {
   const safeDuration = clampDuration(duration);
   const seed = promptSeed(prompt);
+  const noiseStrength = Math.max(1, Math.random() * 100);
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "musewave-videogen-"));
   const outputPath = path.join(tempDir, `${randomUUID()}.mp4`);
@@ -58,6 +59,7 @@ export async function generateVisualizationVideo({ prompt, duration }) {
     const vf = [
       `hue=h=${seed.hueSpeed}*t`,
       `eq=saturation=${seed.saturation}:contrast=${seed.contrast}`,
+      `noise=alls=${noiseStrength}:allf=t+u`,
       "format=yuv420p",
     ].join(",");
 

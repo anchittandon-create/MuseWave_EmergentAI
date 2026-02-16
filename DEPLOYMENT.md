@@ -40,7 +40,7 @@ MuseWave is a full-stack application with:
      MONGO_URL=mongodb+srv://user:password@cluster.mongodb.net
      DB_NAME=muzify_db
      EMERGENT_LLM_KEY=your_api_key
-     REPLICATE_API_TOKEN=yr8_KeUPfiQKfmA4NWqlxuvKFhCokLURCZj4L7N84   # For AI video generation (optional)
+     REPLICATE_API_TOKEN=your_replicate_api_token   # For AI video generation (optional)
      CORS_ORIGINS=https://your-frontend-url.vercel.app
      PORT=8000
      ```

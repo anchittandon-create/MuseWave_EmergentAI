@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Music, Disc, Download, Filter, Calendar, Clock, Loader2, Film, X, Search, FileText, ChevronDown } from "lucide-react";
+import { Music, Disc, Download, Filter, Calendar, Clock, Loader2, Film, X, Search, FileText, ChevronDown, Play, Pause, Rewind, FastForward } from "lucide-react";
 import axios from "axios";
 import { API } from "../App";
 import { toast } from "sonner";
@@ -310,17 +310,9 @@ function UserDashboardContent({ user }) {
 
                   <div className="p-5">
                     <h3 className="font-semibold truncate mb-1">{song.title}</h3>
-                    {song.music_prompt && (
-                      <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{song.music_prompt}</p>
-                    )}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
                       <Calendar className="w-3 h-3" />
                       {formatDate(song.created_at)}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 mb-4">
-                      {song.genres?.slice(0, 3).map((g) => (
-                        <span key={g} className="text-xs px-2 py-0.5 rounded-full bg-secondary">{g}</span>
-                      ))}
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Button
@@ -538,6 +530,9 @@ function UserDashboardContent({ user }) {
 
 function TrackMediaModal({ track, userId, onClose }) {
   const audioRef = useRef(null);
+  const videoRef = useRef(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [videoPlaying, setVideoPlaying] = useState(false);
   const durationLimit = Number(track?.duration_seconds || 0);
 
   const handleAudioTimeUpdate = () => {
@@ -546,6 +541,34 @@ function TrackMediaModal({ track, userId, onClose }) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+  };
+
+  const seekMedia = (ref, delta) => {
+    if (!ref.current) return;
+    const next = Math.max(0, (ref.current.currentTime || 0) + delta);
+    ref.current.currentTime = next;
+  };
+
+  const toggleAudioPlayback = async () => {
+    if (!audioRef.current) return;
+    if (audioRef.current.paused) {
+      await audioRef.current.play();
+      setAudioPlaying(true);
+      return;
+    }
+    audioRef.current.pause();
+    setAudioPlaying(false);
+  };
+
+  const toggleVideoPlayback = async () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      await videoRef.current.play();
+      setVideoPlaying(true);
+      return;
+    }
+    videoRef.current.pause();
+    setVideoPlaying(false);
   };
 
   return (
@@ -567,9 +590,25 @@ function TrackMediaModal({ track, userId, onClose }) {
                 ref={audioRef}
                 src={track.audio_url}
                 controls
+                onPlay={() => setAudioPlaying(true)}
+                onPause={() => setAudioPlaying(false)}
                 onTimeUpdate={handleAudioTimeUpdate}
                 className="w-full"
               />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(audioRef, -10)}>
+                  <Rewind className="w-3.5 h-3.5" />
+                  -10s
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={toggleAudioPlayback}>
+                  {audioPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {audioPlaying ? "Pause" : "Play"}
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(audioRef, 10)}>
+                  <FastForward className="w-3.5 h-3.5" />
+                  +10s
+                </Button>
+              </div>
               <a
                 href={`${API}/songs/${track.id}/download?user_id=${userId}`}
                 className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80"
@@ -583,7 +622,29 @@ function TrackMediaModal({ track, userId, onClose }) {
           {track.video_url ? (
             <div className="space-y-2">
               <p className="text-sm font-medium">Video Player</p>
-              <video src={track.video_url} poster={track.video_thumbnail} controls className="w-full aspect-video bg-black rounded-xl" />
+              <video
+                ref={videoRef}
+                src={track.video_url}
+                poster={track.video_thumbnail}
+                controls
+                onPlay={() => setVideoPlaying(true)}
+                onPause={() => setVideoPlaying(false)}
+                className="w-full aspect-video bg-black rounded-xl"
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(videoRef, -10)}>
+                  <Rewind className="w-3.5 h-3.5" />
+                  -10s
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={toggleVideoPlayback}>
+                  {videoPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {videoPlaying ? "Pause" : "Play"}
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1" onClick={() => seekMedia(videoRef, 10)}>
+                  <FastForward className="w-3.5 h-3.5" />
+                  +10s
+                </Button>
+              </div>
               <a
                 href={`${API}/songs/${track.id}/download-video?user_id=${userId}`}
                 className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80"
@@ -613,6 +674,7 @@ function DetailsModal({ record, type, onClose }) {
     ["Lyrics", record?.lyrics],
     ["Artist Inspiration", record?.artist_inspiration],
     ["Video Style", record?.video_style],
+    ["Entropy", record?.entropy],
     ["Generation Provider", record?.generation_provider],
     ["Created", formatDate(record?.created_at)],
   ];
