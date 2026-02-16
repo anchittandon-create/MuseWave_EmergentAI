@@ -46,8 +46,12 @@ Use `.env` values:
 1. `MUSICGEN_API_URL`
 2. `MUSICGEN_API_KEY`
 3. `REPLICATE_API_TOKEN`
-4. `REPLICATE_MUSIC_MODEL` (default: `meta/musicgen`)
-5. `OPENAI_MODEL` (default: `gpt-4o-mini`)
+4. `REPLICATE_MUSIC_MODEL` (default: `meta/musicgen:671ac645...`)
+5. `REPLICATE_MUSIC_MODEL_VERSION` (default: `stereo-large`)
+6. `REPLICATE_MUSIC_OUTPUT_FORMAT` (default: `mp3`)
+7. `REPLICATE_MUSIC_NORMALIZATION_STRATEGY` (default: `peak`)
+8. `REPLICATE_MUSIC_MAX_DURATION_SECONDS` (default: `30`)
+9. `OPENAI_MODEL` (default: `gpt-4o-mini`)
 
 ## 5. Data Models
 ### 5.1 User
@@ -122,6 +126,7 @@ Prefix: `/api`
 - `POST /suggest`
   - Input: `field`, `current_value`, `context`
   - Output: `suggestion`, `field`
+  - Supported fields: `title`, `music_prompt`, `genres`, `vocal_languages`, `lyrics`, `artist_inspiration`, `video_style`, `duration`
 
 ### Creation
 - `POST /songs/create`

@@ -47,7 +47,14 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
 MUSICGEN_API_KEY = os.environ.get("MUSICGEN_API_KEY")
-REPLICATE_MUSIC_MODEL = os.environ.get("REPLICATE_MUSIC_MODEL", "meta/musicgen")
+REPLICATE_MUSIC_MODEL = os.environ.get(
+    "REPLICATE_MUSIC_MODEL",
+    "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+)
+REPLICATE_MUSIC_MODEL_VERSION = os.environ.get("REPLICATE_MUSIC_MODEL_VERSION", "stereo-large")
+REPLICATE_MUSIC_OUTPUT_FORMAT = os.environ.get("REPLICATE_MUSIC_OUTPUT_FORMAT", "mp3")
+REPLICATE_MUSIC_NORMALIZATION_STRATEGY = os.environ.get("REPLICATE_MUSIC_NORMALIZATION_STRATEGY", "peak")
+REPLICATE_MUSIC_MAX_DURATION_SECONDS = int(os.environ.get("REPLICATE_MUSIC_MAX_DURATION_SECONDS", "30"))
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -171,7 +178,14 @@ GENRE_KNOWLEDGE_BASE = {
     "underground": ["Lo-fi", "Vaporwave", "Shoegaze", "Post-Punk", "Noise", "Drone", "Dark Ambient", "Industrial", "Chiptune", "Glitch"],
     "regional": ["Afrobeats", "Reggaeton", "K-Pop", "J-Pop", "Bollywood", "Bossa Nova", "Flamenco", "Cumbia", "Salsa", "Samba", "Dancehall", "Grime"],
     "micro_genres": ["Trap", "Drill", "Phonk", "Hyperpop", "Bedroom Pop", "Cloud Rap", "Math Rock", "Post-Rock", "Dream Pop"],
-    "cinematic": ["Orchestral", "Cinematic", "Epic", "Film Score", "Video Game", "Ambient Soundscape", "Neo-Classical", "Minimalist"]
+    "cinematic": ["Orchestral", "Cinematic", "Epic", "Film Score", "Video Game", "Ambient Soundscape", "Neo-Classical", "Minimalist"],
+    "latin": ["Latin Pop", "Bachata", "Merengue", "Regional Mexican", "Corridos", "Norteño", "Mariachi", "Dembow", "Latin Trap"],
+    "african": ["Amapiano", "Afro House", "Afro Fusion", "Bongo Flava", "Highlife", "Gqom", "Kuduro", "Afro-Cuban"],
+    "south_asian": ["Indian Classical", "Carnatic", "Qawwali", "Ghazal", "Bollywood", "Bhangra", "Filmi", "Baul"],
+    "east_asian": ["City Pop", "Enka", "Kayokyoku", "Anisong", "Mandopop", "Cantopop", "Trot", "Pansori"],
+    "middle_eastern": ["Arabic Pop", "Maqam", "Dabke", "Rai", "Gnawa", "Persian Traditional", "Turkish Folk", "Tarab"],
+    "traditional_folk": ["Bluegrass", "Celtic Folk", "Nordic Folk", "Flamenco", "Fado", "Tango", "Sufi", "Andean Folk"],
+    "experimental": ["Glitch Hop", "Deconstructed Club", "Footwork", "Juke", "Electroacoustic", "Musique Concrete", "Sound Collage", "Generative Ambient"]
 }
 
 ARTIST_KNOWLEDGE_BASE = {
@@ -180,12 +194,30 @@ ARTIST_KNOWLEDGE_BASE = {
     "rock": ["Tame Impala", "Arctic Monkeys", "Radiohead", "Muse", "Royal Blood", "Khruangbin"],
     "hip_hop": ["Kendrick Lamar", "Tyler the Creator", "Frank Ocean", "Travis Scott", "J. Cole"],
     "ambient": ["Brian Eno", "Stars of the Lid", "Tim Hecker", "Sigur Rós", "Explosions in the Sky"],
-    "jazz": ["Kamasi Washington", "Robert Glasper", "Thundercat", "Snarky Puppy"]
+    "jazz": ["Kamasi Washington", "Robert Glasper", "Thundercat", "Snarky Puppy"],
+    "latin": ["Bad Bunny", "Rosalia", "Karol G", "J Balvin", "Peso Pluma", "Shakira", "Rauw Alejandro"],
+    "african": ["Burna Boy", "Wizkid", "Tems", "Rema", "Asake", "Black Coffee", "Sauti Sol"],
+    "south_asian": ["A. R. Rahman", "Shreya Ghoshal", "Arijit Singh", "Divine", "Nucleya", "Prateek Kuhad"],
+    "east_asian": ["BTS", "BLACKPINK", "IU", "YOASOBI", "Ado", "Jay Chou", "Teresa Teng"],
+    "middle_eastern": ["Amr Diab", "Nancy Ajram", "Fairuz", "Umm Kulthum", "Mohsen Namjoo", "Googoosh"],
+    "classical_heritage": ["Ludwig van Beethoven", "Johann Sebastian Bach", "Antonio Vivaldi", "Claude Debussy", "Ravi Shankar", "Nusrat Fateh Ali Khan"],
+    "global_icons": ["Daft Punk", "Drake", "Adele", "Beyonce", "Bruno Mars", "Coldplay", "Ed Sheeran", "Hans Zimmer"]
 }
 
 LANGUAGE_KNOWLEDGE_BASE = [
     "Instrumental", "English", "Spanish", "French", "German", "Italian", "Portuguese",
-    "Japanese", "Korean", "Chinese (Mandarin)", "Hindi", "Arabic", "Russian", "Swedish"
+    "Japanese", "Korean", "Chinese (Mandarin)", "Chinese (Cantonese)", "Hindi", "Urdu",
+    "Arabic", "Russian", "Swedish", "Norwegian", "Danish", "Finnish", "Dutch", "Polish",
+    "Czech", "Slovak", "Hungarian", "Romanian", "Bulgarian", "Serbian", "Croatian",
+    "Slovenian", "Greek", "Turkish", "Hebrew", "Persian", "Kurdish", "Armenian",
+    "Azerbaijani", "Georgian", "Kazakh", "Uzbek", "Tajik", "Thai", "Vietnamese",
+    "Indonesian", "Malay", "Tagalog", "Tamil", "Telugu", "Kannada", "Malayalam",
+    "Punjabi", "Bengali", "Marathi", "Gujarati", "Sinhala", "Nepali", "Swahili",
+    "Yoruba", "Igbo", "Hausa", "Amharic", "Somali", "Zulu", "Xhosa", "Afrikaans",
+    "Lingala", "Wolof", "Portuguese (Brazil)", "Spanish (Latin America)",
+    "French (Quebec)", "Gaelic", "Irish", "Welsh", "Basque", "Catalan", "Galician",
+    "Icelandic", "Maltese", "Albanian", "Lithuanian", "Latvian", "Estonian",
+    "Khmer", "Lao", "Burmese", "Mongolian"
 ]
 
 VIDEO_STYLE_KNOWLEDGE_BASE = [
@@ -410,15 +442,22 @@ def _generate_music_via_replicate(song_payload: dict) -> Optional[str]:
     try:
         import replicate
         os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
-        duration = int(song_payload.get("duration_seconds") or 30)
-        duration = max(5, min(duration, 120))
+        requested_duration = int(song_payload.get("duration_seconds") or 30)
+        duration = max(5, min(requested_duration, REPLICATE_MUSIC_MAX_DURATION_SECONDS))
         prompt = _build_musicgen_prompt(song_payload)
+
+        base_params = {
+            "prompt": prompt,
+            "model_version": REPLICATE_MUSIC_MODEL_VERSION,
+            "output_format": REPLICATE_MUSIC_OUTPUT_FORMAT,
+            "normalization_strategy": REPLICATE_MUSIC_NORMALIZATION_STRATEGY,
+        }
 
         # Different hosted MusicGen variants may expect different duration keys.
         input_attempts = [
-            {"prompt": prompt, "duration": duration},
-            {"prompt": prompt, "duration_seconds": duration},
-            {"prompt": prompt},
+            {**base_params, "duration": duration},
+            {**base_params, "duration_seconds": duration},
+            base_params,
         ]
         for params in input_attempts:
             try:
@@ -493,7 +532,8 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     if REPLICATE_API_TOKEN:
         replicate_audio_url = await asyncio.to_thread(lambda: _generate_music_via_replicate(song_payload))
         if replicate_audio_url:
-            duration = int(song_payload.get("duration_seconds") or 30)
+            requested_duration = int(song_payload.get("duration_seconds") or 30)
+            duration = max(5, min(requested_duration, REPLICATE_MUSIC_MAX_DURATION_SECONDS))
             return replicate_audio_url, duration, False, f"replicate:{REPLICATE_MUSIC_MODEL}"
 
     selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
@@ -681,6 +721,46 @@ def enhance_video_generation_params(song_data: dict, video_style: str = "") -> d
 
 # ==================== AI Suggestion Engine (OpenAI) ====================
 
+TITLE_BLACKLIST_TERMS = {
+    "cathedral", "labyrinth", "monolith", "oracle", "abyss", "relic", "citadel",
+    "sanctuary", "altar", "hymn", "epitaph", "requiem", "catacomb", "seraph", "omen"
+}
+
+def build_field_system_prompt(field: str) -> str:
+    """Provide stricter field-specific guidance for practical music creation."""
+    common = (
+        "You are an elite global music producer and A&R advisor. "
+        "Output must be directly usable for music creation, never stories."
+    )
+    field_specific = {
+        "title": (
+            "Create relatable, market-friendly track titles that are memorable, modern, and search-friendly. "
+            "Avoid archaic, gothic, fantasy, or overly abstract words."
+        ),
+        "music_prompt": (
+            "Write concrete production direction with instrumentation, groove, arrangement, and mix notes."
+        ),
+        "genres": (
+            "Pick genres that fit the prompt and are recognizable in current music culture."
+        ),
+        "vocal_languages": (
+            "Pick language choices that fit audience and phonetic flow; return Instrumental only when appropriate."
+        ),
+        "lyrics": (
+            "Return a concise lyrical concept that can become a song, not random poetry."
+        ),
+        "artist_inspiration": (
+            "Suggest artist references that are musically relevant and diverse across regions."
+        ),
+        "video_style": (
+            "Return visual direction a director can execute, tied to the song's mood and genre."
+        ),
+        "duration": (
+            "Return only a practical duration suggestion like 30s, 45s, 1m20s, or 2:30."
+        ),
+    }
+    return f"{common} {field_specific.get(field, '')}".strip()
+
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
     """Generate diverse, production-ready, music-specific suggestions."""
     if not openai_client:
@@ -689,12 +769,19 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
             detail="OPENAI_API_KEY is missing. Configure it in backend .env for AI suggestions.",
         )
 
-    system_prompt = (
-        "You are a world-class music producer. Respond ONLY with music-creation guidance. "
-        "Never return stories or generic prose. Use specific sonic and production language."
-    )
+    system_prompt = build_field_system_prompt(field)
+    temperature_map = {
+        "title": 0.82,
+        "music_prompt": 0.88,
+        "genres": 0.85,
+        "lyrics": 0.9,
+        "artist_inspiration": 0.84,
+        "video_style": 0.9,
+        "vocal_languages": 0.75,
+        "duration": 0.5,
+    }
 
-    for _ in range(3):
+    for _ in range(4):
         uniqueness_seed = generate_uniqueness_seed()
         prompt = build_suggestion_prompt(field, current_value, context, uniqueness_seed)
         try:
@@ -705,7 +792,7 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    temperature=0.95,
+                    temperature=temperature_map.get(field, 0.85),
                     max_tokens=280,
                 )
             )
@@ -714,6 +801,8 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
                 suggestion = validate_music_specific_suggestion(field, suggestion)
             if field in ["genres", "vocal_languages"]:
                 suggestion = validate_list_suggestion(field, suggestion)
+            if field == "duration":
+                suggestion = validate_duration_suggestion(suggestion)
             if suggestion and "\n\n" in suggestion:
                 suggestion = suggestion.split("\n\n")[0].strip()
             if suggestion and _remember_suggestion(field, suggestion):
@@ -768,8 +857,70 @@ def validate_music_specific_suggestion(field: str, text: str) -> str:
         return ""  # Too short
     if field == "video_style" and len(words) < 10:
         return ""  # Too short for visual description
+    if field == "title":
+        # Keep title modern + relatable; reject overly obscure words.
+        if len(words) < 1 or len(words) > 6:
+            return ""
+        if len(text) > 44:
+            return ""
+        if any(term in text_lower for term in TITLE_BLACKLIST_TERMS):
+            return ""
+        if any(ch in text for ch in [":", ";", "/", "\\", "{", "}", "[", "]"]):
+            return ""
+        if text_lower.startswith(("the ", "a ", "an ")):
+            # Titles starting with articles are allowed, but avoid bland outputs like "The Sound".
+            if len(words) <= 2:
+                return ""
     
     return text
+
+def validate_duration_suggestion(text: str) -> str:
+    """Validate/normalize AI duration suggestion."""
+    raw = (text or "").strip().lower()
+    if not raw:
+        return ""
+    # Keep only first tokenized line to avoid explanations.
+    raw = raw.split("\n")[0].strip()
+    # Accept forms like 30s, 2m10s, 2:30, 90.
+    if raw.isdigit():
+        seconds = int(raw)
+    elif ":" in raw:
+        try:
+            parts = [int(p) for p in raw.split(":")]
+            if len(parts) == 2:
+                seconds = parts[0] * 60 + parts[1]
+            elif len(parts) == 3:
+                seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
+            else:
+                return ""
+        except ValueError:
+            return ""
+    else:
+        import re
+        h = re.search(r"(\d+)\s*h", raw)
+        m = re.search(r"(\d+)\s*m", raw)
+        s = re.search(r"(\d+)\s*s", raw)
+        if not any([h, m, s]):
+            return ""
+        seconds = 0
+        if h:
+            seconds += int(h.group(1)) * 3600
+        if m:
+            seconds += int(m.group(1)) * 60
+        if s:
+            seconds += int(s.group(1))
+
+    if seconds < 10:
+        seconds = 10
+    if seconds > 72000:
+        seconds = 72000
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    rem = seconds % 60
+    if rem == 0:
+        return f"{minutes}m"
+    return f"{minutes}m{rem}s"
 
 def validate_list_suggestion(field: str, text: str) -> str:
     """Validate and clean list-based suggestions (genres, languages)"""
@@ -893,39 +1044,32 @@ def build_suggestion_prompt(field: str, current_value: str, context: dict, seed:
         context_parts.append(f"Duration: {context['duration_seconds']}s")
     
     context_str = "\n".join(context_parts) if context_parts else "No context provided"
+    known_genres = ", ".join(get_all_genres()[:60])
+    known_languages = ", ".join(LANGUAGE_KNOWLEDGE_BASE[:60])
+    known_artists = ", ".join(get_all_artists()[:60])
     
     # Extract numeric seed components for varied suggestion styles
     seed_hash = hash(seed) % 100
     suggestion_style = ["avant-garde", "classical", "contemporary", "experimental", "fusion"][seed_hash % 5]
     
     prompts = {
-        "title": f"""CRITICAL: Create a UNIQUE, memorable, evocative song/album title that perfectly captures the essence of this music.
+        "title": f"""CRITICAL: Create ONE strong, relatable, modern song/album title that fits this music and feels real for listeners.
 Context: {context_str}
 Current title: '{current_value}'
 Seed: {seed}
 
 UNIQUENESS REQUIREMENT:
 - Each suggestion MUST be completely different from any previous suggestions
-- Avoid repeating themes, patterns, or word combinations you've seen before
-- Draw inspiration from unexpected cultural, literary, or scientific sources
+- Avoid repeating themes, patterns, or word combinations
 - Use the suggestion style: {suggestion_style}
 
 Requirements:
-- Be poetic, memorable, and emotionally resonant
+- Keep it 1-5 words, catchy, and easy to remember
+- Should feel playlist-ready and commercially believable
 - Match the mood and energy of the music
-- Avoid generic terms like "Song", "Track", "Music", "Dream", "Soul", "Heart"
-- Make it truly memorable and unique for listeners
-- Consider wordplay, metaphors, literary references, or cultural nuances
-- Draw from unexpected sources (history, mythology, physics, nature, emotions, languages)
-- Use sophisticated linguistic techniques (alliteration, assonance, paradox, oxymoron)
-- Could be abstract, poetic, or metaphorical
-- Return ONLY the title, no explanation
-
-CREATIVITY RULES:
-1. Think of 5 VERY different title concepts
-2. Choose the one that's LEAST obvious and MOST intriguing
-3. Ensure it's specific to this music description, not generic
-4. Make it something listeners would want to search for or remember""",
+- Avoid archaic/gothic/fantasy words (cathedral, citadel, abyss, oracle, etc.)
+- Avoid filler words like Song, Track, Music
+- Return ONLY the title text, no explanation""",
 
         "music_prompt": f"""CRITICAL: Write a vivid, detailed, professional music production description that would guide a musician/producer.
 Context: {context_str}
@@ -956,6 +1100,7 @@ CREATIVITY RULES:
 
         "genres": f"""CRITICAL: Suggest 2-4 precise music genres/sub-genres that perfectly fit this music - COMPLETELY DIFFERENT and UNIQUE each time.
 Context: {context_str}
+Known genres list (use these names when relevant): {known_genres}
 Seed: {seed}
 
 UNIQUENESS REQUIREMENT:
@@ -1012,6 +1157,7 @@ CREATIVITY RULES:
 
         "artist_inspiration": f"""CRITICAL: Suggest 2-4 specific artist influences with detailed technical/stylistic reasoning - COMPLETELY UNIQUE each time.
 Context: {context_str}
+Known artists list (sample): {known_artists}
 Seed: {seed}
 
 UNIQUENESS REQUIREMENT:
@@ -1068,6 +1214,7 @@ CREATIVITY RULES:
 
         "vocal_languages": f"""CRITICAL: Suggest the most appropriate vocal language(s) for this music - COMPLETELY UNIQUE and ORIGINAL each time.
 Context: {context_str}
+Known language list (sample): {known_languages}
 Seed: {seed}
 
 UNIQUENESS REQUIREMENT:
@@ -1091,7 +1238,18 @@ CREATIVITY RULES:
 1. Avoid repeating the same languages from previous suggestions
 2. Consider unexpected but authentic language choices
 3. Think about linguistic phonetics and how they complement the music
-4. Make culturally aware and respectful suggestions"""
+4. Make culturally aware and respectful suggestions""",
+
+        "duration": f"""Suggest one practical music duration for this idea.
+Context: {context_str}
+Current value: '{current_value}'
+Seed: {seed}
+
+Requirements:
+- Return only duration string (examples: 30s, 45s, 1m20s, 2:30)
+- Keep it realistic for the described structure and genres
+- Prefer 20-180 seconds unless context clearly asks otherwise
+- No explanation text"""
     }
     
     return prompts.get(field, f"Generate a creative suggestion for {field}. Context: {context_str}")
@@ -1867,6 +2025,7 @@ async def api_health():
         "legacy_db_name": LEGACY_DB_NAME if legacy_db else None,
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": music_generation_mode,
+        "music_generation_model": REPLICATE_MUSIC_MODEL if REPLICATE_API_TOKEN else None,
         "video_generation": "configured" if REPLICATE_API_TOKEN else "fallback_sample_video",
         "features": ["ai_suggestions", "lyrics_synthesis", "album_per_track_inputs", "knowledge_bases"],
     }
