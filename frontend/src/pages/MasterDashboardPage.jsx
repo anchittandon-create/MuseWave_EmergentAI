@@ -24,6 +24,17 @@ const SORT_FIELD_OPTIONS = [
   { value: "song_count", label: "Track Count" },
 ];
 
+const FILTER_ALL = "__all__";
+const NO_ALBUM = "__no_album__";
+const MEDIA_PREVIEW_FALLBACK = "https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=240&h=240&fit=crop";
+
+const toDateInputValue = (value) => {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+};
+
 const formatDate = (value) => {
   if (!value) return "-";
   const d = new Date(value);
@@ -72,13 +83,44 @@ const compareValues = (a, b, field) => {
   return String(a || "").localeCompare(String(b || ""));
 };
 
+const uniqueSorted = (values) =>
+  Array.from(
+    new Set(
+      (values || [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
+const MediaThumbLink = ({ href, image, label }) => {
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="group inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] p-1.5 hover:border-primary/50 hover:bg-primary/10 transition-colors"
+    >
+      <img
+        src={image || MEDIA_PREVIEW_FALLBACK}
+        alt={label}
+        className="w-10 h-10 rounded object-cover border border-white/10"
+        loading="lazy"
+      />
+      <span className="text-xs text-primary group-hover:underline">{label}</span>
+    </a>
+  );
+};
+
 export default function MasterDashboardPage({ user }) {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("tracks");
   const [dashboard, setDashboard] = useState({ summary: {}, tracks: [], songs: [], albums: [], users: [] });
   const [search, setSearch] = useState("");
-  const [nameFilter, setNameFilter] = useState("");
-  const [mobileFilter, setMobileFilter] = useState("");
+  const [nameFilter, setNameFilter] = useState(FILTER_ALL);
+  const [mobileFilter, setMobileFilter] = useState(FILTER_ALL);
+  const [titleFilter, setTitleFilter] = useState(FILTER_ALL);
+  const [albumFilter, setAlbumFilter] = useState(FILTER_ALL);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [sortField, setSortField] = useState("created_at");
@@ -100,12 +142,62 @@ export default function MasterDashboardPage({ user }) {
     loadData();
   }, [loadData]);
 
+  const baseRecords = useMemo(() => (Array.isArray(dashboard[tab]) ? dashboard[tab] : []), [dashboard, tab]);
+
+  const filterOptions = useMemo(() => {
+    const names = uniqueSorted(baseRecords.map((record) => record.user_name));
+    const mobiles = uniqueSorted(baseRecords.map((record) => record.user_mobile));
+    const titles = uniqueSorted(baseRecords.map((record) => record.title));
+    const albums = baseRecords.map((record) => {
+      if (tab === "albums") return record.title || "";
+      return record.album_title || NO_ALBUM;
+    });
+    const uniqueAlbums = uniqueSorted(albums).map((value) =>
+      value === NO_ALBUM ? { value: NO_ALBUM, label: "Singles / No Album" } : { value, label: value }
+    );
+
+    return {
+      names,
+      mobiles,
+      titles,
+      albums: uniqueAlbums,
+    };
+  }, [baseRecords, tab]);
+
+  const dateBounds = useMemo(() => {
+    const validDates = baseRecords
+      .map((record) => new Date(record.created_at))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    if (!validDates.length) {
+      return { min: "", max: "" };
+    }
+
+    return {
+      min: toDateInputValue(validDates[0].toISOString()),
+      max: toDateInputValue(validDates[validDates.length - 1].toISOString()),
+    };
+  }, [baseRecords]);
+
+  useEffect(() => {
+    setNameFilter(FILTER_ALL);
+    setMobileFilter(FILTER_ALL);
+    setTitleFilter(FILTER_ALL);
+    setAlbumFilter(FILTER_ALL);
+    setFromDate(dateBounds.min);
+    setToDate(dateBounds.max);
+  }, [tab, dateBounds.min, dateBounds.max]);
+
   const records = useMemo(() => {
-    const base = Array.isArray(dashboard[tab]) ? dashboard[tab] : [];
-    const filtered = base.filter((record) => {
+    const filtered = baseRecords.filter((record) => {
       if (!recordContains(record, search)) return false;
-      if (nameFilter && !String(record.user_name || "").toLowerCase().includes(nameFilter.toLowerCase())) return false;
-      if (mobileFilter && !String(record.user_mobile || "").includes(mobileFilter)) return false;
+      if (nameFilter !== FILTER_ALL && String(record.user_name || "") !== nameFilter) return false;
+      if (mobileFilter !== FILTER_ALL && String(record.user_mobile || "") !== mobileFilter) return false;
+      if (titleFilter !== FILTER_ALL && String(record.title || "") !== titleFilter) return false;
+
+      const resolvedAlbum = tab === "albums" ? String(record.title || "") : String(record.album_title || NO_ALBUM);
+      if (albumFilter !== FILTER_ALL && resolvedAlbum !== albumFilter) return false;
 
       const createdAt = record.created_at ? new Date(record.created_at) : null;
       if (fromDate) {
@@ -126,7 +218,7 @@ export default function MasterDashboardPage({ user }) {
       const diff = compareValues(valueA, valueB, sortField);
       return sortOrder === "asc" ? diff : -diff;
     });
-  }, [dashboard, tab, search, nameFilter, mobileFilter, fromDate, toDate, sortField, sortOrder]);
+  }, [baseRecords, tab, search, nameFilter, mobileFilter, titleFilter, albumFilter, fromDate, toDate, sortField, sortOrder]);
 
   if (loading) {
     return (
@@ -186,21 +278,79 @@ export default function MasterDashboardPage({ user }) {
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">User Name</Label>
-              <Input value={nameFilter} onChange={(e) => setNameFilter(e.target.value)} className="mt-1" placeholder="Filter by user name" />
+              <select
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+              >
+                <option value={FILTER_ALL}>All User Names</option>
+                {filterOptions.names.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mobile</Label>
-              <Input value={mobileFilter} onChange={(e) => setMobileFilter(e.target.value)} className="mt-1" placeholder="Filter by mobile" />
+              <select
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={mobileFilter}
+                onChange={(e) => setMobileFilter(e.target.value)}
+              >
+                <option value={FILTER_ALL}>All Mobile Numbers</option>
+                {filterOptions.mobiles.map((mobile) => (
+                  <option key={mobile} value={mobile}>{mobile}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Track / Album</Label>
+              <select
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={titleFilter}
+                onChange={(e) => setTitleFilter(e.target.value)}
+              >
+                <option value={FILTER_ALL}>All Track/Album Names</option>
+                {filterOptions.titles.map((title) => (
+                  <option key={title} value={title}>{title}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Album</Label>
+              <select
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={albumFilter}
+                onChange={(e) => setAlbumFilter(e.target.value)}
+              >
+                <option value={FILTER_ALL}>All Albums</option>
+                {filterOptions.albums.map((album) => (
+                  <option key={album.value} value={album.value}>{album.label}</option>
+                ))}
+              </select>
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">From Date</Label>
-              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-1" />
+              <Input
+                type="date"
+                min={dateBounds.min || undefined}
+                max={dateBounds.max || undefined}
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="mt-1"
+              />
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">To Date</Label>
-              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-1" />
+              <Input
+                type="date"
+                min={dateBounds.min || undefined}
+                max={dateBounds.max || undefined}
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="mt-1"
+              />
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2 md:col-span-2 lg:col-span-3">
               <div>
                 <Label className="text-xs uppercase tracking-wide text-muted-foreground">Sort By</Label>
                 <select
@@ -224,6 +374,26 @@ export default function MasterDashboardPage({ user }) {
                   <option value="asc">Ascending</option>
                 </select>
               </div>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    setSearch("");
+                    setNameFilter(FILTER_ALL);
+                    setMobileFilter(FILTER_ALL);
+                    setTitleFilter(FILTER_ALL);
+                    setAlbumFilter(FILTER_ALL);
+                    setFromDate(dateBounds.min);
+                    setToDate(dateBounds.max);
+                    setSortField("created_at");
+                    setSortOrder("desc");
+                  }}
+                >
+                  Reset Filters
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -246,7 +416,7 @@ export default function MasterDashboardPage({ user }) {
         </div>
 
         <div className="glass rounded-2xl overflow-auto" data-testid="master-results-table">
-          <table className="w-full min-w-[980px] text-sm">
+          <table className="w-full min-w-[1180px] text-sm">
             <thead className="bg-secondary/40">
               <tr>
                 <th className="text-left p-3 font-medium">Type</th>
@@ -268,7 +438,15 @@ export default function MasterDashboardPage({ user }) {
                       <Badge variant="outline">{isAlbum ? "Album" : item.source === "single" ? "Single" : "Track"}</Badge>
                     </td>
                     <td className="p-3">
-                      <div className="font-medium truncate max-w-[220px]">{item.title || "-"}</div>
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={item.cover_art_url || MEDIA_PREVIEW_FALLBACK}
+                          alt={item.title || "track"}
+                          className="w-10 h-10 rounded object-cover border border-white/10"
+                          loading="lazy"
+                        />
+                        <div className="font-medium truncate max-w-[220px]">{item.title || "-"}</div>
+                      </div>
                     </td>
                     <td className="p-3 text-muted-foreground truncate max-w-[220px]">{item.album_title || "-"}</td>
                     <td className="p-3">{item.user_name || "Unknown"}</td>
@@ -281,17 +459,22 @@ export default function MasterDashboardPage({ user }) {
                     </td>
                     <td className="p-3">{isAlbum ? `${item.song_count || 0} tracks` : formatDuration(item.duration_seconds)}</td>
                     <td className="p-3">
-                      <div className="flex gap-2">
-                        {!isAlbum && item.audio_url && (
-                          <a href={item.audio_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                            Audio
-                          </a>
+                      <div className="flex flex-wrap gap-2">
+                        {!isAlbum && (
+                          <MediaThumbLink
+                            href={item.audio_url}
+                            image={item.cover_art_url || MEDIA_PREVIEW_FALLBACK}
+                            label="Audio"
+                          />
                         )}
-                        {!isAlbum && item.video_url && (
-                          <a href={item.video_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                            Video
-                          </a>
+                        {!isAlbum && (
+                          <MediaThumbLink
+                            href={item.video_url}
+                            image={item.video_thumbnail || item.cover_art_url || MEDIA_PREVIEW_FALLBACK}
+                            label="Video"
+                          />
                         )}
+                        {isAlbum && <span className="text-muted-foreground">-</span>}
                       </div>
                     </td>
                   </tr>

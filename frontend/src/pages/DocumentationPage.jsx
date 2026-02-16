@@ -93,7 +93,7 @@ const DOC_SECTIONS = [
     title: "9. Security and Access Rules",
     points: [
       "Authentication identity is mobile-based and user records are persistent.",
-      "Master dashboard guard checks requester user record and allows only configured mobile admin.",
+      "Master dashboard guard checks requester user record and allows only the permanent mobile admin `9873945238`.",
       "Environment variables are used for API keys and DB credentials; secrets are never hardcoded in frontend code.",
     ],
   },

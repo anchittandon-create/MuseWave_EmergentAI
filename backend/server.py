@@ -46,7 +46,8 @@ PRIMARY_DB_NAME = os.environ.get('DB_NAME', 'muzify_db')
 LEGACY_DB_NAME = os.environ.get('LEGACY_DB_NAME', 'musewave_db')
 db = client[PRIMARY_DB_NAME]
 legacy_db = client[LEGACY_DB_NAME] if LEGACY_DB_NAME != PRIMARY_DB_NAME else None
-MASTER_ADMIN_MOBILE = os.environ.get("MASTER_ADMIN_MOBILE", "9873945238")
+# Permanent master user for global dashboard access.
+MASTER_ADMIN_MOBILE = "9873945238"
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
