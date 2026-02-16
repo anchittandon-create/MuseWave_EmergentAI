@@ -32,6 +32,7 @@ import requests
 from PIL import Image, ImageDraw
 import json
 import re
+import time
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 ROOT_DIR = Path(__file__).parent
@@ -1302,25 +1303,19 @@ async def generate_ai_suggestion(
             fallback = validate_list_suggestion(field, fallback)
         if field == "duration":
             fallback = validate_duration_suggestion(fallback)
-        if fallback:
-            normalized_fallback = _normalize_suggestion_text(fallback)
-            if normalized_fallback in seen_in_scope:
-                for i in range(1, 10):
-                    candidate = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn + i)
-                    if field in ["genres", "vocal_languages"]:
-                        candidate = validate_list_suggestion(field, candidate)
-                    if field == "duration":
-                        candidate = validate_duration_suggestion(candidate)
-                    if candidate and _normalize_suggestion_text(candidate) not in seen_in_scope:
-                        fallback = candidate
-                        break
-            _remember_suggestion(field, fallback)
-            await _persist_scope_suggestion(field, scope_key, fallback, user_id)
-            return fallback
-        raise HTTPException(
-            status_code=500,
-            detail="OPENAI_API_KEY is missing and fallback suggestion failed.",
+        finalized = await _finalize_unique_suggestion(
+            field=field,
+            suggestion=fallback,
+            context=context,
+            current_value=current_value,
+            seen_in_scope=seen_in_scope,
+            scope_key=scope_key,
+            user_id=user_id,
+            turn_hint=suggestion_turn,
         )
+        if finalized:
+            return finalized
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing and fallback suggestion failed.")
 
     system_prompt = build_field_system_prompt(field)
     candidates: list[tuple[int, str]] = []
@@ -1368,10 +1363,19 @@ async def generate_ai_suggestion(
             if relevance >= 58:
                 candidates.append((relevance, suggestion))
 
-            if relevance >= 72 and _remember_suggestion(field, suggestion):
-                seen_in_scope.add(normalized)
-                await _persist_scope_suggestion(field, scope_key, suggestion, user_id)
-                return suggestion
+            if relevance >= 72:
+                finalized = await _finalize_unique_suggestion(
+                    field=field,
+                    suggestion=suggestion,
+                    context=context,
+                    current_value=current_value,
+                    seen_in_scope=seen_in_scope,
+                    scope_key=scope_key,
+                    user_id=user_id,
+                    turn_hint=suggestion_turn,
+                )
+                if finalized:
+                    return finalized
         except Exception as e:
             logger.error(f"AI suggestion error for {field}: {e}")
             err_text = str(e).lower()
@@ -1385,35 +1389,40 @@ async def generate_ai_suggestion(
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        for _, candidate in candidates:
+        for idx, (_, candidate) in enumerate(candidates):
             normalized = _normalize_suggestion_text(candidate)
             if normalized in seen_in_scope:
                 continue
-            if _remember_suggestion(field, candidate):
-                seen_in_scope.add(normalized)
-                await _persist_scope_suggestion(field, scope_key, candidate, user_id)
-                return candidate
+            finalized = await _finalize_unique_suggestion(
+                field=field,
+                suggestion=candidate,
+                context=context,
+                current_value=current_value,
+                seen_in_scope=seen_in_scope,
+                scope_key=scope_key,
+                user_id=user_id,
+                turn_hint=suggestion_turn + idx + 1,
+            )
+            if finalized:
+                return finalized
 
     fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
     if field in ["genres", "vocal_languages"]:
         fallback = validate_list_suggestion(field, fallback)
     if field == "duration":
         fallback = validate_duration_suggestion(fallback)
-    normalized_fallback = _normalize_suggestion_text(fallback)
-    if normalized_fallback in seen_in_scope:
-        for i in range(1, 20):
-            candidate = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn + i)
-            if field in ["genres", "vocal_languages"]:
-                candidate = validate_list_suggestion(field, candidate)
-            if field == "duration":
-                candidate = validate_duration_suggestion(candidate)
-            if candidate and _normalize_suggestion_text(candidate) not in seen_in_scope:
-                fallback = candidate
-                break
-    if fallback:
-        _remember_suggestion(field, fallback)
-        await _persist_scope_suggestion(field, scope_key, fallback, user_id)
-        return fallback
+    finalized = await _finalize_unique_suggestion(
+        field=field,
+        suggestion=fallback,
+        context=context,
+        current_value=current_value,
+        seen_in_scope=seen_in_scope,
+        scope_key=scope_key,
+        user_id=user_id,
+        turn_hint=suggestion_turn + 77,
+    )
+    if finalized:
+        return finalized
 
     raise HTTPException(status_code=502, detail=f"AI suggestion failed for field '{field}'.")
 
@@ -1556,6 +1565,212 @@ def validate_list_suggestion(field: str, text: str) -> str:
         return ", ".join(canonical[:3]) if canonical else ""
 
     return text
+
+
+def _duration_text_to_seconds(text: str) -> Optional[int]:
+    value = validate_duration_suggestion(text)
+    if not value:
+        return None
+    raw = value.strip().lower()
+    if raw.isdigit():
+        return int(raw)
+    if ":" in raw:
+        try:
+            parts = [int(p) for p in raw.split(":")]
+            if len(parts) == 2:
+                return parts[0] * 60 + parts[1]
+            if len(parts) == 3:
+                return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        except ValueError:
+            return None
+    h = re.search(r"(\d+)\s*h", raw)
+    m = re.search(r"(\d+)\s*m", raw)
+    s = re.search(r"(\d+)\s*s", raw)
+    total = 0
+    if h:
+        total += int(h.group(1)) * 3600
+    if m:
+        total += int(m.group(1)) * 60
+    if s:
+        total += int(s.group(1))
+    return total if total > 0 else None
+
+
+def _seconds_to_duration_text(seconds: int) -> str:
+    seconds = max(10, min(int(seconds), 72000))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, rem = divmod(seconds, 60)
+    if rem == 0:
+        return f"{minutes}m"
+    return f"{minutes}m{rem}s"
+
+
+def _enforce_unique_suggestion(
+    field: str,
+    suggestion: str,
+    context: dict,
+    current_value: str,
+    seen_in_scope: set[str],
+    turn_hint: int,
+) -> str:
+    base = (suggestion or "").strip()
+    if not base:
+        return ""
+
+    context = context or {}
+    seen = {(_normalize_suggestion_text(x)) for x in seen_in_scope if x}
+    seen.update({(_normalize_suggestion_text(x)) for x in RECENT_SUGGESTIONS.get(field, []) if x})
+    current_norm = _normalize_suggestion_text(current_value or "")
+
+    seed_material = (
+        f"{field}|{base}|{generate_uniqueness_seed()}|{turn_hint}|"
+        f"{datetime.now(timezone.utc).isoformat()}|{time.time_ns()}|{uuid.uuid4().hex}"
+    )
+    seed_val = int(hashlib.sha256(seed_material.encode()).hexdigest(), 16)
+
+    title_leads = [
+        "Neon", "Midnight", "Solar", "Velvet", "Echo", "Pulse",
+        "Nova", "Lunar", "Prism", "Ember", "Voltage", "Starlit"
+    ]
+    title_tails = [
+        "Mix", "Cut", "Drive", "Flow", "Signal", "Wave",
+        "Rush", "Shift", "Mode", "Edit", "Version", "Pass"
+    ]
+    text_cues = [
+        "tighten transient punch",
+        "widen stereo movement in chorus",
+        "add syncopated groove accents",
+        "deepen low-end pocket and glue",
+        "shift hook phrasing for contrast",
+        "increase dynamic lift into drop",
+        "shape vocal space with short delay",
+        "lean into rhythmic motif variation",
+    ]
+
+    def build_candidate(step: int) -> str:
+        token = format((seed_val + step * 7919) % 65536, "04x")
+
+        if field == "title":
+            cleaned = re.sub(r"[^A-Za-z0-9'\-\s]", " ", base)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            words = cleaned.split()[:4]
+            stem = " ".join(words) if words else "Track"
+            lead = title_leads[(seed_val + step) % len(title_leads)]
+            tail = title_tails[(seed_val // 17 + step) % len(title_tails)]
+            candidate = f"{lead} {stem} {tail} {token}".strip()
+            return candidate[:44].strip()
+
+        if field == "duration":
+            seconds = _duration_text_to_seconds(base) or 30
+            offset = ((seed_val + step * 37) % 19) - 9
+            if offset == 0:
+                offset = 3
+            return _seconds_to_duration_text(seconds + offset)
+
+        if field in ["genres", "vocal_languages"]:
+            choices = get_all_genres() if field == "genres" else LANGUAGE_KNOWLEDGE_BASE
+            parsed = _split_list_like_text(base)
+            canonical = []
+            for item in parsed:
+                match = _best_match_from_choices(item, choices)
+                if match and match not in canonical:
+                    canonical.append(match)
+            if not canonical and field == "genres":
+                for item in (context.get("genres") or []):
+                    match = _best_match_from_choices(item, choices)
+                    if match and match not in canonical:
+                        canonical.append(match)
+            if not canonical:
+                start = (seed_val + step) % len(choices)
+                take = 2 if field == "genres" else 1
+                canonical = [choices[(start + i) % len(choices)] for i in range(take)]
+            rotate = (seed_val + step) % len(canonical)
+            rotated = canonical[rotate:] + canonical[:rotate]
+            if field == "genres" and len(rotated) < 2:
+                extra = choices[(seed_val // 11 + step) % len(choices)]
+                if extra not in rotated:
+                    rotated.append(extra)
+            limit = 4 if field == "genres" else 3
+            return ", ".join(rotated[:limit])
+
+        if field == "artist_inspiration":
+            artists = get_all_artists()
+            parsed = _split_list_like_text(base)
+            canonical = []
+            for item in parsed:
+                match = _best_match_from_choices(item, artists)
+                if match and match not in canonical:
+                    canonical.append(match)
+            if not canonical:
+                start = (seed_val + step) % len(artists)
+                canonical = [artists[(start + i) % len(artists)] for i in range(3)]
+            rotate = (seed_val + step) % len(canonical)
+            rotated = canonical[rotate:] + canonical[:rotate]
+            if len(rotated) < 3:
+                extra = artists[(seed_val // 7 + step) % len(artists)]
+                if extra not in rotated:
+                    rotated.append(extra)
+            return ", ".join(rotated[:4])
+
+        if field in ["music_prompt", "video_style", "lyrics"]:
+            cue = text_cues[(seed_val + step) % len(text_cues)]
+            spacer = " " if base.endswith((".", "!", "?")) else ". "
+            return f"{base}{spacer}Variation cue: {cue} [{token}]"
+
+        return f"{base} {token}"
+
+    for step in range(0, 30):
+        candidate = build_candidate(step).strip()
+        if not candidate:
+            continue
+        if field in ["genres", "vocal_languages"]:
+            candidate = validate_list_suggestion(field, candidate)
+        if field == "duration":
+            candidate = validate_duration_suggestion(candidate)
+        if field in ["music_prompt", "lyrics", "video_style", "title"]:
+            validated = validate_music_specific_suggestion(field, candidate)
+            candidate = validated or candidate
+        if not candidate:
+            continue
+        normalized = _normalize_suggestion_text(candidate)
+        if current_norm and normalized == current_norm:
+            continue
+        if normalized in seen:
+            continue
+        return candidate
+
+    fallback_token = uuid.uuid4().hex[:6]
+    if field == "duration":
+        return _seconds_to_duration_text((_duration_text_to_seconds(base) or 30) + 3)
+    return f"{base} {fallback_token}"
+
+
+async def _finalize_unique_suggestion(
+    field: str,
+    suggestion: str,
+    context: dict,
+    current_value: str,
+    seen_in_scope: set[str],
+    scope_key: str,
+    user_id: Optional[str],
+    turn_hint: int,
+) -> str:
+    unique = _enforce_unique_suggestion(
+        field=field,
+        suggestion=suggestion,
+        context=context,
+        current_value=current_value,
+        seen_in_scope=seen_in_scope,
+        turn_hint=turn_hint,
+    )
+    if not unique:
+        return ""
+    normalized = _normalize_suggestion_text(unique)
+    seen_in_scope.add(normalized)
+    _remember_suggestion(field, unique)
+    await _persist_scope_suggestion(field, scope_key, unique, user_id)
+    return unique
 
 async def generate_lyrics(music_prompt: str, genres: list, languages: list, title: str = "") -> str:
     """Generate singable lyrics aligned to genre, language, and prompt."""

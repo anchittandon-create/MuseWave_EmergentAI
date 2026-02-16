@@ -2,41 +2,50 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import crypto from "crypto";
 
 const runFfmpeg = (args) =>
   new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const processHandle = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
 
     let stderr = "";
-    proc.stderr.on("data", (chunk) => {
+    processHandle.stderr.on("data", (chunk) => {
       stderr += String(chunk);
     });
 
-    proc.on("error", (err) => {
-      if (err.code === "ENOENT") {
-        reject(new Error("FFmpeg not found. Install FFmpeg on the deployment/runtime environment."));
-      } else {
-        reject(err);
-      }
+    processHandle.on("error", (error) => {
+      reject(error);
     });
 
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`FFmpeg failed with code ${code}: ${stderr}`));
+    processHandle.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`ffmpeg failed with code ${code}: ${stderr}`));
+      }
     });
   });
 
-const clampDuration = (value) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 30;
-  return Math.max(1, Math.min(Math.round(parsed), 300));
+const parseDuration = (duration) => {
+  const parsed = Number(duration);
+  if (!Number.isFinite(parsed)) {
+    throw new Error("duration must be a valid number");
+  }
+  const normalized = Math.round(parsed);
+  if (normalized < 1 || normalized > 300) {
+    throw new Error("duration must be between 1 and 300 seconds");
+  }
+  return normalized;
 };
 
 export async function normalizeAudioToWav(audioBuffer) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "musewave-audio-"));
-  const inputPath = path.join(tempDir, `${randomUUID()}.input`);
-  const outputPath = path.join(tempDir, `${randomUUID()}.wav`);
+  if (!audioBuffer || !audioBuffer.length) {
+    throw new Error("audioBuffer is required");
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mwv-audio-"));
+  const inputPath = path.join(tempDir, `${crypto.randomUUID()}-${Date.now()}.input`);
+  const outputPath = path.join(tempDir, `${crypto.randomUUID()}-${Date.now()}.wav`);
 
   try {
     await fs.writeFile(inputPath, audioBuffer);
@@ -57,18 +66,29 @@ export async function normalizeAudioToWav(audioBuffer) {
       outputPath,
     ]);
 
-    return await fs.readFile(outputPath);
+    const wavBuffer = await fs.readFile(outputPath);
+    if (!wavBuffer.length) {
+      throw new Error("audio normalization produced empty output");
+    }
+    return wavBuffer;
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
 export async function muxAudioAndVideo({ audioBuffer, videoBuffer, duration }) {
-  const safeDuration = clampDuration(duration);
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "musewave-mux-"));
-  const audioPath = path.join(tempDir, `${randomUUID()}.wav`);
-  const videoPath = path.join(tempDir, `${randomUUID()}.mp4`);
-  const outputPath = path.join(tempDir, `${randomUUID()}.mp4`);
+  if (!audioBuffer || !audioBuffer.length) {
+    throw new Error("audioBuffer is required");
+  }
+  if (!videoBuffer || !videoBuffer.length) {
+    throw new Error("videoBuffer is required");
+  }
+
+  const safeDuration = parseDuration(duration);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mwv-mux-"));
+  const audioPath = path.join(tempDir, `${crypto.randomUUID()}-${Date.now()}.wav`);
+  const videoPath = path.join(tempDir, `${crypto.randomUUID()}-${Date.now()}.mp4`);
+  const outputPath = path.join(tempDir, `${crypto.randomUUID()}-${Date.now()}.mp4`);
 
   try {
     await fs.writeFile(audioPath, audioBuffer);
@@ -103,7 +123,11 @@ export async function muxAudioAndVideo({ audioBuffer, videoBuffer, duration }) {
       outputPath,
     ]);
 
-    return await fs.readFile(outputPath);
+    const mp4Buffer = await fs.readFile(outputPath);
+    if (!mp4Buffer.length) {
+      throw new Error("mux output is empty");
+    }
+    return mp4Buffer;
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

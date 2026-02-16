@@ -1,29 +1,31 @@
 import { MongoClient } from "mongodb";
 
-const uri = process.env.MONGODB_URI;
-if (!uri) {
+const mongoUri = process.env.MONGODB_URI;
+if (!mongoUri) {
   throw new Error("Missing MONGODB_URI environment variable");
 }
 
-const options = {};
+const defaultDbName = process.env.MONGODB_DB_NAME || process.env.DB_NAME || "musewave_db";
 
-let client;
-let clientPromise;
+let cachedPromise = globalThis.__musewaveMongoPromise;
 
-if (process.env.NODE_ENV === "development") {
-  if (!global._musewaveMongoClientPromise) {
-    client = new MongoClient(uri, options);
-    global._musewaveMongoClientPromise = client.connect();
+if (!cachedPromise) {
+  const client = new MongoClient(mongoUri, {});
+  cachedPromise = client.connect();
+  globalThis.__musewaveMongoPromise = cachedPromise;
+}
+
+export async function getMongoDb(dbName = defaultDbName) {
+  const client = await cachedPromise;
+  return client.db(dbName);
+}
+
+export async function getMongoCollection(collectionName, dbName = defaultDbName) {
+  if (!String(collectionName || "").trim()) {
+    throw new Error("collectionName is required");
   }
-  clientPromise = global._musewaveMongoClientPromise;
-} else {
-  client = new MongoClient(uri, options);
-  clientPromise = client.connect();
+  const db = await getMongoDb(dbName);
+  return db.collection(collectionName);
 }
 
-export async function getMongoDb(dbName = "musewave_db") {
-  const connectedClient = await clientPromise;
-  return connectedClient.db(dbName);
-}
-
-export default clientPromise;
+export default cachedPromise;

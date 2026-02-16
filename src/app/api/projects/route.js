@@ -1,29 +1,26 @@
 import { NextResponse } from "next/server";
-import { getMongoDb } from "../../../lib/mongodb";
+import { getMongoCollection } from "../../../lib/mongodb";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const getDefaultDateRange = () => {
-  const rawCreationDate = process.env.APP_CREATION_DATE;
-  if (!rawCreationDate) {
-    throw new Error("Missing APP_CREATION_DATE environment variable");
+const parseIsoDate = (value, fieldName) => {
+  if (!value) {
+    throw new Error(`Missing ${fieldName} environment variable`);
   }
-
-  const appCreationDate = new Date(rawCreationDate);
-  if (Number.isNaN(appCreationDate.getTime())) {
-    throw new Error("Invalid APP_CREATION_DATE. Expected ISO date string.");
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${fieldName} must be a valid ISO date`);
   }
-
-  const now = new Date();
-  return { appCreationDate, now };
+  return parsed;
 };
 
 export async function GET() {
   try {
-    const { appCreationDate, now } = getDefaultDateRange();
+    const appCreationDate = parseIsoDate(process.env.APP_CREATION_DATE, "APP_CREATION_DATE");
+    const now = new Date();
 
-    const db = await getMongoDb();
+    const projectsCollection = await getMongoCollection("projects");
     const query = {
       created_at: {
         $gte: appCreationDate,
@@ -31,15 +28,12 @@ export async function GET() {
       },
     };
 
-    const projects = await db
-      .collection("projects")
-      .find(query)
-      .sort({ created_at: -1 })
-      .toArray();
+    const projects = await projectsCollection.find(query).sort({ created_at: -1 }).toArray();
 
     const serialized = projects.map((project) => ({
       ...project,
       _id: String(project._id),
+      created_at: new Date(project.created_at).toISOString(),
     }));
 
     return NextResponse.json(
@@ -56,7 +50,7 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to fetch projects",
+        error: error instanceof Error ? error.message : "project query failed",
       },
       { status: 500 }
     );

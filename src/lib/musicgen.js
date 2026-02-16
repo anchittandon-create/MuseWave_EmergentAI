@@ -1,165 +1,160 @@
-import { addEntropyVariation, buildEntropyPrompt, generateEntropy } from "./entropy";
+import { buildFinalPrompt, generateEntropy } from "./entropy";
 
 const MUSICGEN_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-large";
-const PROMPT_MODEL_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large";
+const SUGGESTION_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const normalizeArrayField = (value) => {
-  if (Array.isArray(value)) return value.map((v) => String(v || "").trim()).filter(Boolean);
-  if (typeof value === "string") return value.split(",").map((v) => v.trim()).filter(Boolean);
+const parseDuration = (duration) => {
+  const parsed = Number(duration);
+  if (!Number.isFinite(parsed)) {
+    throw new Error("duration must be a valid number");
+  }
+  const normalized = Math.round(parsed);
+  if (normalized < 1 || normalized > 300) {
+    throw new Error("duration must be between 1 and 300 seconds");
+  }
+  return normalized;
+};
+
+const toList = (value) => {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
   return [];
 };
 
-const clampDuration = (value) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 30;
-  return Math.max(1, Math.min(Math.round(parsed), 300));
-};
-
-const getAuthHeaders = () => {
-  const apiKey = process.env.HUGGINGFACE_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing HUGGINGFACE_API_KEY environment variable");
+const extractGeneratedText = (payload) => {
+  if (Array.isArray(payload) && payload[0] && typeof payload[0].generated_text === "string") {
+    return payload[0].generated_text;
   }
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-  };
-};
-
-const heuristicPrompt = ({ genres = [], artistInspiration = "", description = "" } = {}) => {
-  const safeGenres = normalizeArrayField(genres);
-  const artist = String(artistInspiration || "").trim();
-  const desc = String(description || "").trim();
-
-  const parts = [];
-  if (safeGenres.length) parts.push(`Genre blend: ${safeGenres.slice(0, 5).join(", ")}`);
-  if (artist) parts.push(`Artist inspiration: ${artist}`);
-  if (desc) parts.push(`Creative direction: ${desc}`);
-
-  if (!parts.length) {
-    parts.push("Original modern cinematic electronic track with clear motifs and dynamic arrangement");
-  }
-
-  parts.push("Studio-quality instrumental production, polished mix, expressive transitions, and memorable hook");
-  return parts.join(". ");
-};
-
-const parseGeneratedText = (data) => {
-  if (Array.isArray(data) && data[0] && typeof data[0].generated_text === "string") {
-    return data[0].generated_text;
-  }
-  if (data && typeof data.generated_text === "string") {
-    return data.generated_text;
+  if (payload && typeof payload.generated_text === "string") {
+    return payload.generated_text;
   }
   return "";
 };
 
-export async function autoSuggestPrompt({ genres = [], artistInspiration = "", description = "", entropy } = {}) {
-  const suggestionEntropy = entropy || generateEntropy("suggestion");
-  const fallbackBase = heuristicPrompt({ genres, artistInspiration, description });
-  const fallback = addEntropyVariation(fallbackBase, suggestionEntropy);
+const getHeaders = () => {
+  const token = process.env.HUGGINGFACE_API_KEY;
+  if (!token) {
+    throw new Error("Missing HUGGINGFACE_API_KEY environment variable");
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+};
 
-  try {
-    const headers = getAuthHeaders();
-    const inputPrompt = [
-      "Create one detailed music generation prompt.",
-      "Keep it practical, specific, and production-focused.",
-      "Make it sonically unique and fresh.",
-      `Genres: ${normalizeArrayField(genres).join(", ") || "Not specified"}`,
-      `Artist inspiration: ${String(artistInspiration || "").trim() || "Not specified"}`,
-      `Description: ${String(description || "").trim() || "Not specified"}`,
-      `Variation entropy: ${suggestionEntropy}`,
-      `Timestamp: ${Date.now()}`,
-      `Random factor: ${Math.random()}`,
-      "Output exactly one prompt line only.",
-    ].join("\n");
+const buildDynamicSourceText = ({ userPrompt = "", genres = [], artistInspiration = "", description = "", entropy }) => {
+  const promptPart = String(userPrompt || "").trim();
+  const genrePart = toList(genres).join(", ");
+  const artistPart = String(artistInspiration || "").trim();
+  const descriptionPart = String(description || "").trim();
 
-    const res = await fetch(PROMPT_MODEL_URL, {
+  const dynamicParts = [promptPart, genrePart, artistPart, descriptionPart]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+
+  if (!dynamicParts.length) {
+    throw new Error("Missing prompt content. Provide prompt or musical context fields.");
+  }
+
+  return `${dynamicParts.join(" | ")} | ${entropy}`;
+};
+
+export async function autoSuggestPrompt({ userPrompt = "", genres = [], artistInspiration = "", description = "", entropy }) {
+  const requestEntropy = String(entropy || generateEntropy()).trim();
+  const inputContext = buildDynamicSourceText({
+    userPrompt,
+    genres,
+    artistInspiration,
+    description,
+    entropy: requestEntropy,
+  });
+
+  const headers = getHeaders();
+  const instruction = `${inputContext}\n${Date.now()}\n${Math.random()}`;
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const response = await fetch(SUGGESTION_URL, {
       method: "POST",
       headers,
-      body: JSON.stringify({ inputs: inputPrompt }),
+      body: JSON.stringify({ inputs: instruction }),
       cache: "no-store",
     });
 
-    if (!res.ok) return fallback;
+    if (response.ok) {
+      const payload = await response.json();
+      const text = extractGeneratedText(payload).trim();
+      const source = text || inputContext;
+      return buildFinalPrompt(source, requestEntropy);
+    }
 
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) return fallback;
+    if (response.status === 503 || response.status === 429) {
+      await wait(Math.min(2000 * attempt, 8000));
+      continue;
+    }
 
-    const data = await res.json();
-    const generated = String(parseGeneratedText(data) || "").trim();
-    return addEntropyVariation(generated || fallbackBase, suggestionEntropy);
-  } catch {
-    return fallback;
+    const message = await response.text().catch(() => "");
+    throw new Error(`Prompt suggestion request failed: ${response.status} ${message}`.trim());
   }
+
+  return buildFinalPrompt(inputContext, requestEntropy);
 }
 
 export async function generateMusicAudio({ prompt, duration, entropy }) {
-  const headers = getAuthHeaders();
+  const headers = getHeaders();
+  const safeDuration = parseDuration(duration);
   const safePrompt = String(prompt || "").trim();
-  const safeDuration = clampDuration(duration);
-  const entropyValue = entropy || generateEntropy("audio");
-  const finalPrompt = buildEntropyPrompt(safePrompt, entropyValue);
+  if (!safePrompt) {
+    throw new Error("prompt is required for music generation");
+  }
 
-  let lastError = "MusicGen request failed";
+  const requestEntropy = String(entropy || generateEntropy()).trim();
+  const finalPrompt = buildFinalPrompt(safePrompt, requestEntropy);
 
   for (let attempt = 1; attempt <= 6; attempt += 1) {
-    const res = await fetch(MUSICGEN_URL, {
+    const response = await fetch(MUSICGEN_URL, {
       method: "POST",
       headers,
       body: JSON.stringify({
         inputs: finalPrompt,
         parameters: {
           duration: safeDuration,
-          temperature: 1.2,
-          top_k: 250,
-          top_p: 0.98,
           do_sample: true,
+          temperature: 1.2,
+          top_p: 0.98,
         },
       }),
       cache: "no-store",
     });
 
-    if (res.ok) {
-      const audioArrayBuffer = await res.arrayBuffer();
-      const audioBuffer = Buffer.from(audioArrayBuffer);
+    if (response.ok) {
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = Buffer.from(arrayBuffer);
       if (!audioBuffer.length) {
-        throw new Error("MusicGen returned empty audio buffer");
+        throw new Error("MusicGen returned empty audio response");
       }
       return {
         audioBuffer,
-        duration: safeDuration,
         finalPrompt,
+        entropy: requestEntropy,
+        duration: safeDuration,
       };
     }
 
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const errorPayload = await res.json().catch(() => ({}));
-      const detail = errorPayload?.error || errorPayload?.message || "unknown error";
-      lastError = `MusicGen API ${res.status}: ${detail}`;
-      if (res.status === 503) {
-        const waitSeconds = Number(errorPayload?.estimated_time || 4);
-        await sleep(Math.max(1000, Math.min(waitSeconds * 1000, 15000)));
-        continue;
-      }
-    } else {
-      const text = await res.text().catch(() => "");
-      lastError = `MusicGen API ${res.status}: ${text || "non-json error"}`;
-      if (res.status === 503) {
-        await sleep(3000);
-        continue;
-      }
+    if (response.status === 503 || response.status === 429) {
+      await wait(Math.min(2500 * attempt, 12000));
+      continue;
     }
 
-    if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-      break;
-    }
-
-    await sleep(Math.min(1200 * attempt, 6000));
+    const message = await response.text().catch(() => "");
+    throw new Error(`MusicGen request failed: ${response.status} ${message}`.trim());
   }
 
-  throw new Error(lastError);
+  throw new Error("MusicGen request exhausted retry attempts");
 }
