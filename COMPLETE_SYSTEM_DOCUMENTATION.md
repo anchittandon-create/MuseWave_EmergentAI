@@ -1393,7 +1393,7 @@ MONGO_URL=mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true
 DB_NAME=soundforge_db
 
 # OpenAI API
-OPENAI_API_KEY=sk-proj-...
+OPENAI_API_KEY=<set-in-vercel-env>
 
 # Replicate (Optional)
 REPLICATE_API_TOKEN=r8_...
