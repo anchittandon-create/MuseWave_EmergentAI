@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu } from "lucide-react";
+import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu, FileText } from "lucide-react";
 import { Button } from "./ui/button";
 
 export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
@@ -7,6 +7,7 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
     { to: "/", icon: Home, label: "Home" },
     { to: "/create", icon: Music, label: "Create Music" },
     { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+    { to: "/docs", icon: FileText, label: "System Docs" },
   ];
 
   return (

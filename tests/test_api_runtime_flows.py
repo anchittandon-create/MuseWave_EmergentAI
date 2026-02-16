@@ -369,3 +369,65 @@ def test_legacy_db_bool_regression(monkeypatch):
     login_res = client.post("/api/auth/login", json={"mobile": legacy_user["mobile"]})
     assert login_res.status_code == 200, login_res.text
     assert login_res.json()["id"] == legacy_user["id"]
+
+
+def test_master_dashboard_access_and_data_scope(test_client: TestClient):
+    admin_signup = test_client.post("/api/auth/signup", json={"name": "Admin", "mobile": "9873945238"})
+    assert admin_signup.status_code == 200, admin_signup.text
+    admin = admin_signup.json()
+
+    user_a_signup = test_client.post("/api/auth/signup", json={"name": "User A", "mobile": "9000001111"})
+    user_b_signup = test_client.post("/api/auth/signup", json={"name": "User B", "mobile": "9000002222"})
+    assert user_a_signup.status_code == 200, user_a_signup.text
+    assert user_b_signup.status_code == 200, user_b_signup.text
+    user_a = user_a_signup.json()
+    user_b = user_b_signup.json()
+
+    album_id = "album-master-1"
+    test_client.app.state  # keep lint quiet in CI where state checks can vary
+    # Insert album + songs directly into fake collections for deterministic assertions.
+    server.db.albums.docs.append(
+        {
+            "id": album_id,
+            "title": "Global Album",
+            "user_id": user_b["id"],
+            "created_at": "2026-02-16T00:00:00+00:00",
+        }
+    )
+    server.db.songs.docs.extend(
+        [
+            {
+                "id": "single-1",
+                "title": "Single One",
+                "user_id": user_a["id"],
+                "album_id": None,
+                "duration_seconds": 30,
+                "audio_url": "https://example.com/single.mp3",
+                "created_at": "2026-02-16T00:00:01+00:00",
+            },
+            {
+                "id": "track-1",
+                "title": "Album Track",
+                "user_id": user_b["id"],
+                "album_id": album_id,
+                "duration_seconds": 35,
+                "audio_url": "https://example.com/track.mp3",
+                "created_at": "2026-02-16T00:00:02+00:00",
+            },
+        ]
+    )
+
+    denied = test_client.get(f"/api/dashboard/master/{user_a['id']}")
+    assert denied.status_code == 403, denied.text
+
+    ok = test_client.get(f"/api/dashboard/master/{admin['id']}")
+    assert ok.status_code == 200, ok.text
+    payload = ok.json()
+    assert payload["master"] is True
+    assert payload["summary"]["total_users"] >= 3
+    assert payload["summary"]["total_tracks"] >= 2
+    assert payload["summary"]["total_singles"] >= 1
+    assert payload["summary"]["total_albums"] >= 1
+    assert any(track.get("title") == "Album Track" for track in payload["tracks"])
+    assert any(song.get("title") == "Single One" for song in payload["songs"])
+    assert any(album.get("title") == "Global Album" for album in payload["albums"])

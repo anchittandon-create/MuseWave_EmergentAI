@@ -5,6 +5,7 @@ import { Sidebar } from "./components/Sidebar";
 import { HomePage } from "./pages/HomePage";
 import { CreateMusicPage } from "./pages/CreateMusicPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DocumentationPage } from "./pages/DocumentationPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
@@ -127,6 +128,7 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/create" element={<CreateMusicPage user={user} />} />
               <Route path="/dashboard" element={<DashboardPage user={user} />} />
+              <Route path="/docs" element={<DocumentationPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>

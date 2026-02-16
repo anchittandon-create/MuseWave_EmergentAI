@@ -18,7 +18,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timezone
 from openai import OpenAI
@@ -36,12 +36,17 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+mongo_url = (
+    os.environ.get("MONGO_URL")
+    or os.environ.get("MONGODB_URI")
+    or "mongodb://localhost:27017"
+)
 client = AsyncIOMotorClient(mongo_url)
 PRIMARY_DB_NAME = os.environ.get('DB_NAME', 'muzify_db')
 LEGACY_DB_NAME = os.environ.get('LEGACY_DB_NAME', 'musewave_db')
 db = client[PRIMARY_DB_NAME]
 legacy_db = client[LEGACY_DB_NAME] if LEGACY_DB_NAME != PRIMARY_DB_NAME else None
+MASTER_ADMIN_MOBILE = os.environ.get("MASTER_ADMIN_MOBILE", "9873945238")
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -56,6 +61,10 @@ REPLICATE_MUSIC_MODEL_VERSION = os.environ.get("REPLICATE_MUSIC_MODEL_VERSION", 
 REPLICATE_MUSIC_OUTPUT_FORMAT = os.environ.get("REPLICATE_MUSIC_OUTPUT_FORMAT", "mp3")
 REPLICATE_MUSIC_NORMALIZATION_STRATEGY = os.environ.get("REPLICATE_MUSIC_NORMALIZATION_STRATEGY", "peak")
 REPLICATE_MUSIC_MAX_DURATION_SECONDS = int(os.environ.get("REPLICATE_MUSIC_MAX_DURATION_SECONDS", "30"))
+SUGGEST_MAX_ATTEMPTS = max(1, min(int(os.environ.get("SUGGEST_MAX_ATTEMPTS", "3")), 6))
+SUGGEST_OPENAI_TIMEOUT_SECONDS = max(
+    2.0, min(float(os.environ.get("SUGGEST_OPENAI_TIMEOUT_SECONDS", "8")), 30.0)
+)
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -1044,11 +1053,14 @@ def _fallback_suggestion(field: str, context: dict, avoid_texts: Optional[set[st
         mix_opts = ["wide chorus lift", "focused mono-compatible low-end", "controlled transient punch", "clean vocal-forward balance"]
         base_prompt = prompt[:180] if prompt else "A polished modern track concept"
         options = []
-        for i in range(8):
-            options.append(
-                f"{base_prompt}. Build around {genre} with {pick(drum_opts, i)}, {pick(bass_opts, i + 2)}, and {pick(top_opts, i + 4)}. "
-                f"Arrange with tension in the verse and a strong chorus payoff, keeping a {pick(mix_opts, i + 6)}."
-            )
+        for drum_idx, drum in enumerate(drum_opts):
+            for bass_idx, bass in enumerate(bass_opts):
+                for top_idx, top in enumerate(top_opts):
+                    mix = pick(mix_opts, drum_idx + bass_idx + top_idx)
+                    options.append(
+                        f"{base_prompt}. Build around {genre} with {drum}, {bass}, and {top}. "
+                        f"Arrange with tension in the verse and a strong chorus payoff, keeping a {mix}."
+                    )
         return pick_unique(options)
 
     if field == "genres":
@@ -1083,21 +1095,24 @@ def _fallback_suggestion(field: str, context: dict, avoid_texts: Optional[set[st
         camera_opts = ["handheld push-ins", "slow tracking wides", "shoulder-level follow shots", "low-angle glide shots"]
         edit_opts = ["rhythmic jump cuts", "long takes with beat-matched transitions", "strobe-accented cut points", "cross-dissolves on downbeats"]
         options = []
-        for i in range(8):
-            options.append(
-                f"Use {pick(color_opts, i + 31)} palette with {pick(camera_opts, i + 41)}. "
-                f"Keep lighting cinematic and motion-driven, then finish with {pick(edit_opts, i + 47)} aligned to the drum accents."
-            )
+        for color in color_opts:
+            for camera in camera_opts:
+                for edit in edit_opts:
+                    options.append(
+                        f"Use {color} palette with {camera}. "
+                        f"Keep lighting cinematic and motion-driven, then finish with {edit} aligned to the drum accents."
+                    )
         return pick_unique(options)
 
     if field == "lyrics":
         image_opts = ["city lights in rain", "empty freeway at 2AM", "flickering hallway neon", "late-night window reflections"]
         arc_opts = ["rebuild confidence", "escape emotional noise", "push through pressure", "choose clarity over chaos"]
         options = []
-        for i in range(8):
-            options.append(
-                f"A focused hook about how to {pick(arc_opts, i + 59)}, using {pick(image_opts, i + 53)} as the repeating chorus image."
-            )
+        for arc in arc_opts:
+            for image in image_opts:
+                options.append(
+                    f"A focused hook about how to {arc}, using {image} as the repeating chorus image."
+                )
         return pick_unique(options)
 
     return "Creative suggestion"
@@ -1131,7 +1146,7 @@ async def generate_ai_suggestion(
     system_prompt = build_field_system_prompt(field)
     candidates: list[tuple[int, str]] = []
 
-    for _ in range(7):
+    for _ in range(SUGGEST_MAX_ATTEMPTS):
         uniqueness_seed = generate_uniqueness_seed()
         prompt = build_suggestion_prompt(
             field,
@@ -1150,6 +1165,7 @@ async def generate_ai_suggestion(
                     ],
                     temperature=FIELD_TEMPERATURE.get(field, 0.65),
                     max_tokens=280,
+                    timeout=SUGGEST_OPENAI_TIMEOUT_SECONDS,
                 )
             )
             suggestion = (response.choices[0].message.content or "").strip()
@@ -1163,6 +1179,8 @@ async def generate_ai_suggestion(
                 suggestion = suggestion.split("\n\n")[0].strip()
             if not suggestion:
                 continue
+            if current_value and _normalize_suggestion_text(suggestion) == _normalize_suggestion_text(current_value):
+                continue
             normalized = _normalize_suggestion_text(suggestion)
             if normalized in seen_in_scope:
                 continue
@@ -1171,12 +1189,20 @@ async def generate_ai_suggestion(
             if relevance >= 58:
                 candidates.append((relevance, suggestion))
 
-            if relevance >= 88 and _remember_suggestion(field, suggestion):
+            if relevance >= 72 and _remember_suggestion(field, suggestion):
                 seen_in_scope.add(normalized)
                 await _persist_scope_suggestion(field, scope_key, suggestion, user_id)
                 return suggestion
         except Exception as e:
             logger.error(f"AI suggestion error for {field}: {e}")
+            err_text = str(e).lower()
+            if (
+                "insufficient_quota" in err_text
+                or "invalid_api_key" in err_text
+                or "rate_limit" in err_text
+                or "timed out" in err_text
+            ):
+                break
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -1568,7 +1594,7 @@ async def create_song(song_data: SongCreate):
             title = await generate_ai_suggestion("title", "", {
                 "music_prompt": song_data.music_prompt,
                 "genres": song_data.genres
-            })
+            }, song_data.user_id)
         except:
             title = f"Track {uuid.uuid4().hex[:6].upper()}"
     
@@ -1688,6 +1714,7 @@ async def create_album(album_data: AlbumCreate):
                 "title",
                 "",
                 {"music_prompt": album_prompt, "genres": combined_genres},
+                album_data.user_id,
             )
         except Exception:
             title = f"Album {uuid.uuid4().hex[:6].upper()}"
@@ -1745,6 +1772,7 @@ async def create_album(album_data: AlbumCreate):
                     "title",
                     "",
                     {"music_prompt": track_prompt, "genres": track_genres, "track_number": i + 1},
+                    album_data.user_id,
                 )
             except Exception:
                 track_title = f"{title} - Track {i + 1}"
@@ -1812,6 +1840,30 @@ async def create_album(album_data: AlbumCreate):
 
 # ==================== Data Retrieval ====================
 
+async def _get_user_by_id(user_id: str) -> Optional[dict]:
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user and legacy_db is not None:
+        user = await legacy_db.users.find_one({"id": user_id}, {"_id": 0})
+    return user
+
+
+async def _ensure_master_access(user_id: str) -> dict:
+    user = await _get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("mobile") != MASTER_ADMIN_MOBILE:
+        raise HTTPException(status_code=403, detail="Master dashboard access denied")
+    return user
+
+
+def _parse_iso_datetime(value: Optional[str]) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
 @api_router.get("/songs/user/{user_id}")
 async def get_user_songs(user_id: str):
     songs = await db.songs.find({"user_id": user_id, "album_id": None}, {"_id": 0}).to_list(100)
@@ -1857,6 +1909,80 @@ async def get_dashboard(user_id: str):
             album_songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
             album['songs'] = album_songs
     return {"songs": songs, "albums": albums}
+
+
+@api_router.get("/dashboard/master/{user_id}")
+async def get_master_dashboard(user_id: str):
+    await _ensure_master_access(user_id)
+
+    users = await db.users.find({}, {"_id": 0}).to_list(5000)
+    if legacy_db is not None:
+        legacy_users = await legacy_db.users.find({}, {"_id": 0}).to_list(5000)
+        existing_ids = {u.get("id") for u in users}
+        for user in legacy_users:
+            if user.get("id") not in existing_ids:
+                users.append(user)
+
+    songs = await db.songs.find({}, {"_id": 0}).to_list(10000)
+    albums = await db.albums.find({}, {"_id": 0}).to_list(5000)
+
+    users_by_id = {u.get("id"): u for u in users if u.get("id")}
+    albums_by_id = {a.get("id"): a for a in albums if a.get("id")}
+    songs_by_album = {}
+    for song in songs:
+        album_id = song.get("album_id")
+        if not album_id:
+            continue
+        songs_by_album.setdefault(album_id, []).append(song)
+
+    enriched_songs = []
+    for song in songs:
+        owner = users_by_id.get(song.get("user_id"), {})
+        album = albums_by_id.get(song.get("album_id")) if song.get("album_id") else None
+        enriched = {
+            **song,
+            "user_name": owner.get("name", "Unknown User"),
+            "user_mobile": owner.get("mobile", "N/A"),
+            "album_title": album.get("title") if album else None,
+            "item_type": "track",
+            "source": "album_track" if song.get("album_id") else "single",
+        }
+        enriched_songs.append(enriched)
+
+    singles = [s for s in enriched_songs if not s.get("album_id")]
+    singles.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+
+    enriched_albums = []
+    for album in albums:
+        owner = users_by_id.get(album.get("user_id"), {})
+        album_tracks = songs_by_album.get(album.get("id"), [])
+        album_tracks_sorted = sorted(album_tracks, key=lambda s: s.get("created_at", ""), reverse=True)
+        enriched_album = {
+            **album,
+            "user_name": owner.get("name", "Unknown User"),
+            "user_mobile": owner.get("mobile", "N/A"),
+            "song_count": len(album_tracks_sorted),
+            "songs": album_tracks_sorted,
+            "item_type": "album",
+        }
+        enriched_albums.append(enriched_album)
+
+    enriched_songs.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+    enriched_albums.sort(key=lambda a: a.get("created_at", ""), reverse=True)
+
+    return {
+        "master": True,
+        "summary": {
+            "total_users": len(users),
+            "total_tracks": len(enriched_songs),
+            "total_singles": len(singles),
+            "total_albums": len(enriched_albums),
+        },
+        "users": sorted(users, key=lambda u: u.get("created_at", ""), reverse=True),
+        "tracks": enriched_songs,
+        "songs": singles,
+        "albums": enriched_albums,
+    }
 
 # ==================== Video Generation ====================
 

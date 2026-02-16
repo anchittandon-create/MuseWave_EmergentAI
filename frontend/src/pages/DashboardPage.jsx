@@ -4,8 +4,19 @@ import { Music, Disc, Play, Pause, Download, Filter, Calendar, Clock, Loader2, F
 import axios from "axios";
 import { API } from "../App";
 import { toast } from "sonner";
+import { MasterDashboardPage } from "./MasterDashboardPage";
+
+const MASTER_ADMIN_MOBILE = "9873945238";
 
 export default function DashboardPage({ user }) {
+  if (user?.mobile === MASTER_ADMIN_MOBILE) {
+    return <MasterDashboardPage user={user} />;
+  }
+
+  return <UserDashboardContent user={user} />;
+}
+
+function UserDashboardContent({ user }) {
   const [filter, setFilter] = useState("all");
   const [data, setData] = useState({ songs: [], albums: [] });
   const [loading, setLoading] = useState(true);

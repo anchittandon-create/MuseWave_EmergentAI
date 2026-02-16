@@ -167,12 +167,16 @@ export default function CreateMusicPage({ user }) {
         };
       }
 
-      const response = await axios.post(`${SUGGEST_API}/suggest`, {
-        field,
-        current_value: currentValue,
-        context,
-        user_id: user?.id || null,
-      });
+      const response = await axios.post(
+        `${SUGGEST_API}/suggest`,
+        {
+          field,
+          current_value: currentValue,
+          context,
+          user_id: user?.id || null,
+        },
+        { timeout: 15000 }
+      );
 
       if (mode === "album" && songIndex !== null) {
         applySuggestionToSong(songIndex, field, response.data.suggestion);
