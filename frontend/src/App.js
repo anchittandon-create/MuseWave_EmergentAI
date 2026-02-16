@@ -9,13 +9,22 @@ import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
 const DEFAULT_BACKEND_URL = "https://muzify-1.preview.emergentagent.com";
+const INVALID_BACKEND_HOSTS = new Set([
+  "github.com",
+  "www.github.com",
+  "raw.githubusercontent.com",
+]);
 
 const normalizeBackendUrl = (rawUrl) => {
   if (!rawUrl) return null;
   try {
-    return new URL(rawUrl).origin;
+    const parsed = new URL(rawUrl);
+    if (INVALID_BACKEND_HOSTS.has(parsed.hostname)) return null;
+    return parsed.origin;
   } catch {
-    return rawUrl.replace(/\/+$/, "").replace(/\/dashboard$/i, "");
+    const normalized = rawUrl.replace(/\/+$/, "").replace(/\/dashboard$/i, "");
+    if (/github\.com/i.test(normalized)) return null;
+    return normalized;
   }
 };
 
