@@ -11,11 +11,11 @@ let client;
 let clientPromise;
 
 if (process.env.NODE_ENV === "development") {
-  if (!global._mongoClientPromise) {
+  if (!global._musewaveMongoClientPromise) {
     client = new MongoClient(uri, options);
-    global._mongoClientPromise = client.connect();
+    global._musewaveMongoClientPromise = client.connect();
   }
-  clientPromise = global._mongoClientPromise;
+  clientPromise = global._musewaveMongoClientPromise;
 } else {
   client = new MongoClient(uri, options);
   clientPromise = client.connect();
