@@ -14,7 +14,7 @@ import { API, SUGGEST_API } from "../App";
 export default function CreateMusicPage({ user }) {
   const [mode, setMode] = useState("single");
   const [loading, setLoading] = useState(false);
-  const [suggestingField, setSuggestingField] = useState(null);
+  const [suggestingFields, setSuggestingFields] = useState(() => new Set());
   const [genres, setGenres] = useState([]);
   const [languages, setLanguages] = useState([]);
   const [artists, setArtists] = useState([]);
@@ -31,6 +31,16 @@ export default function CreateMusicPage({ user }) {
   const [expandedSongIndex, setExpandedSongIndex] = useState(null);
   const [songReference, setSongReference] = useState(null); // Track which song was used as reference
   const [albumVideoLoading, setAlbumVideoLoading] = useState(false);
+
+  const getSuggestKey = useCallback((field, songIndex = null) => {
+    const scope = songIndex === null ? "main" : `song-${songIndex}`;
+    return `${scope}:${field}`;
+  }, []);
+
+  const isSuggesting = useCallback(
+    (field, songIndex = null) => suggestingFields.has(getSuggestKey(field, songIndex)),
+    [getSuggestKey, suggestingFields]
+  );
 
   const [formData, setFormData] = useState({
     title: "",
@@ -131,7 +141,12 @@ export default function CreateMusicPage({ user }) {
   const displayedGenres = showAllGenres ? filteredGenres : filteredGenres.slice(0, 20);
 
   const handleAISuggest = async (field, songIndex = null) => {
-    setSuggestingField(field);
+    const key = getSuggestKey(field, songIndex);
+    setSuggestingFields((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
     try {
       // Get current value based on mode (single or album song)
       let currentValue, context;
@@ -191,7 +206,11 @@ export default function CreateMusicPage({ user }) {
         toast.error(error.response?.data?.detail || "Failed to get suggestion");
       }
     } finally {
-      setSuggestingField(null);
+      setSuggestingFields((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -263,10 +282,12 @@ export default function CreateMusicPage({ user }) {
     if (!trimmed) return;
 
     // Track that this field received an AI suggestion
-    const newSuggestedFields = new Set(aiSuggestedFields);
-    newSuggestedFields.add(field);
-    setAiSuggestedFields(newSuggestedFields);
-    setLastSuggestion({ ...lastSuggestion, [field]: trimmed });
+    setAiSuggestedFields((prev) => {
+      const next = new Set(prev);
+      next.add(field);
+      return next;
+    });
+    setLastSuggestion((prev) => ({ ...prev, [field]: trimmed }));
 
     const updates = {
       title: { title: suggestion },
@@ -535,10 +556,10 @@ export default function CreateMusicPage({ user }) {
           : "text-primary hover:text-primary hover:bg-primary/10"
       }`}
       onClick={() => handleAISuggest(field)}
-      disabled={suggestingField === field || loading}
+      disabled={isSuggesting(field) || loading}
       data-testid={`suggest-${field}-btn`}
     >
-      {suggestingField === field ? (
+      {isSuggesting(field) ? (
         <Loader2 className="w-3 h-3 animate-spin" />
       ) : (
         <Sparkles className="w-3 h-3" />
@@ -712,10 +733,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("title", idx)}
-                            disabled={suggestingField === "title"}
+                            disabled={isSuggesting("title", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "title" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("title", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <Input
@@ -735,10 +756,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("music_prompt", idx)}
-                            disabled={suggestingField === "music_prompt"}
+                            disabled={isSuggesting("music_prompt", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "music_prompt" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("music_prompt", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <Textarea
@@ -758,10 +779,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("duration", idx)}
-                            disabled={suggestingField === "duration"}
+                            disabled={isSuggesting("duration", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "duration" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("duration", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <div className="flex items-center gap-4">
@@ -789,10 +810,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("lyrics", idx)}
-                            disabled={suggestingField === "lyrics"}
+                            disabled={isSuggesting("lyrics", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "lyrics" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("lyrics", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <Textarea
@@ -812,10 +833,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("genres", idx)}
-                            disabled={suggestingField === "genres"}
+                            disabled={isSuggesting("genres", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "genres" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("genres", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -846,10 +867,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("vocal_languages", idx)}
-                            disabled={suggestingField === "vocal_languages"}
+                            disabled={isSuggesting("vocal_languages", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "vocal_languages" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("vocal_languages", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -880,10 +901,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("artist_inspiration", idx)}
-                            disabled={suggestingField === "artist_inspiration"}
+                            disabled={isSuggesting("artist_inspiration", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "artist_inspiration" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("artist_inspiration", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <Input
@@ -903,10 +924,10 @@ export default function CreateMusicPage({ user }) {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleAISuggest("video_style", idx)}
-                            disabled={suggestingField === "video_style"}
+                            disabled={isSuggesting("video_style", idx)}
                             className="text-xs h-auto px-2 py-1 text-primary hover:text-primary/80"
                           >
-                            {suggestingField === "video_style" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isSuggesting("video_style", idx) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                           </Button>
                         </div>
                         <Input

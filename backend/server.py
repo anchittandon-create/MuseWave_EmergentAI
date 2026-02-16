@@ -9,7 +9,7 @@ Independent backend with:
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from openai import OpenAI
 import random
 import hashlib
+import mimetypes
 import zipfile
 import io
 import base64
@@ -352,20 +353,79 @@ def get_genre_category(genres: List[str]) -> str:
     
     return "default"
 
-def select_audio_for_genres(genres: List[str], used_urls: set = None) -> dict:
-    """Select appropriate audio based on genres, avoiding repeats"""
+def _normalize_duration_seconds(value: Any, default: int = 30) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(10, min(parsed, 72000))
+
+
+def _context_keyword_hits(song_payload: dict, track_title: str) -> int:
+    prompt_text = " ".join(
+        [
+            str(song_payload.get("music_prompt") or ""),
+            str(song_payload.get("artist_inspiration") or ""),
+            str(song_payload.get("lyrics") or ""),
+            " ".join(song_payload.get("genres") or []),
+        ]
+    ).lower()
+    title = (track_title or "").lower()
+    mood_groups = {
+        "dark": {"dark", "night", "midnight", "shadow", "moody"},
+        "energy": {"energy", "power", "drive", "pulse", "rush", "drop"},
+        "calm": {"calm", "ambient", "chill", "lofi", "peaceful", "soft"},
+        "cinematic": {"cinematic", "epic", "orchestral", "score", "drama"},
+        "urban": {"street", "urban", "beat", "bass", "flow"},
+        "uplift": {"uplift", "inspire", "summer", "feel", "dream"},
+    }
+    hits = 0
+    for _, tokens in mood_groups.items():
+        context_has = any(token in prompt_text for token in tokens)
+        title_has = any(token in title for token in tokens)
+        if context_has and title_has:
+            hits += 1
+    return hits
+
+
+def select_audio_for_genres(genres: List[str], used_urls: set = None, song_payload: Optional[dict] = None) -> dict:
+    """Select contextual audio based on genres/prompt while avoiding repeats."""
     if used_urls is None:
         used_urls = set()
+    if song_payload is None:
+        song_payload = {}
     
     category = get_genre_category(genres)
     available_tracks = AUDIO_LIBRARY.get(category, AUDIO_LIBRARY["default"])
-    
-    # Filter out already used tracks
-    unused_tracks = [t for t in available_tracks if t["url"] not in used_urls]
-    if not unused_tracks:
-        unused_tracks = available_tracks  # Reset if all used
-    
-    return random.choice(unused_tracks)
+    requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=30)
+
+    # Prefer unused tracks first; fallback to full category if exhausted.
+    pool = [t for t in available_tracks if t["url"] not in used_urls] or list(available_tracks)
+
+    scored_tracks = []
+    prompt_signature = "|".join(
+        [
+            category,
+            str(song_payload.get("music_prompt") or ""),
+            str(song_payload.get("artist_inspiration") or ""),
+            str(song_payload.get("lyrics") or "")[:80],
+            str(requested_duration),
+        ]
+    )
+
+    for track in pool:
+        track_duration = int(track.get("duration") or requested_duration)
+        duration_delta = abs(track_duration - requested_duration)
+        duration_score = max(0.0, 1.0 - (duration_delta / max(track_duration, requested_duration, 1)))
+        context_hits = _context_keyword_hits(song_payload, track.get("title", ""))
+        tie_breaker = int(
+            hashlib.sha256(f"{prompt_signature}|{track.get('url','')}".encode()).hexdigest()[:8], 16
+        ) / float(16 ** 8)
+        score = (duration_score * 2.0) + context_hits + tie_breaker
+        scored_tracks.append((score, track))
+
+    scored_tracks.sort(key=lambda item: item[0], reverse=True)
+    return scored_tracks[0][1]
 
 def select_cover_art(genres: List[str]) -> str:
     """Select appropriate cover art based on genres"""
@@ -569,9 +629,10 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     provider_failures: list[str] = []
 
     if FREE_TIER_MODE:
-        selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
+        selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls, song_payload)
         used_audio_urls.add(selected["url"])
-        return selected["url"], selected["duration"], True, "free_curated_library"
+        requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
+        return selected["url"], requested_duration, True, "free_curated_library"
 
     if MUSICGEN_API_URL:
         try:
@@ -630,9 +691,10 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
             detail=f"Real music generation failed. {provider_summary}",
         )
 
-    selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
+    selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls, song_payload)
     used_audio_urls.add(selected["url"])
-    return selected["url"], selected["duration"], True, "curated_demo_library"
+    requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
+    return selected["url"], requested_duration, True, "curated_demo_library"
 
 def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate | dict) -> float:
     """Calculate accuracy percentage of selected audio against input parameters
@@ -2109,7 +2171,7 @@ async def get_master_dashboard(user_id: str):
 
 # ==================== Video Generation Utilities ====================
 
-_SAMPLE_VIDEO_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
+_SAMPLE_VIDEO_URL = "https://samplelib.com/lib/preview/mp4/sample-10s.mp4"
 
 # Replicate model for AI video generation (minimax video-01: text + image to video)
 REPLICATE_VIDEO_MODEL = "minimax/video-01"
@@ -2329,6 +2391,49 @@ async def download_song(song_id: str, user_id: str):
     except Exception as e:
         logger.error(f"Error downloading song: {e}")
         raise HTTPException(status_code=500, detail="Failed to download song")
+
+
+@api_router.get("/songs/{song_id}/download-video")
+async def download_song_video(song_id: str, user_id: str):
+    """Download generated video for a single song."""
+    try:
+        song = await db.songs.find_one({"id": song_id, "user_id": user_id}, {"_id": 0})
+        if not song:
+            raise HTTPException(status_code=404, detail="Song not found")
+
+        video_url = song.get("video_url")
+        if not video_url:
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        response = requests.get(video_url, timeout=20)
+        if response.status_code != 200:
+            # Fallback to direct redirect when provider rejects server-side fetch.
+            return RedirectResponse(video_url, status_code=307)
+
+        guessed_ext = Path(video_url.split("?")[0]).suffix or ""
+        if not guessed_ext:
+            content_type = response.headers.get("content-type", "video/mp4").split(";")[0].strip()
+            guessed_ext = mimetypes.guess_extension(content_type) or ".mp4"
+        filename = f"{song.get('title', 'song')}{guessed_ext}"
+        media_type = response.headers.get("content-type", "video/mp4")
+
+        return StreamingResponse(
+            iter([response.content]),
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading video: {e}")
+        # Last-resort fallback to provider URL if available.
+        try:
+            song = await db.songs.find_one({"id": song_id, "user_id": user_id}, {"_id": 0})
+            if song and song.get("video_url"):
+                return RedirectResponse(song.get("video_url"), status_code=307)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Failed to download video")
 
 async def _run_video_generation_task(song_id: str, user_id: str):
     """Background task: generate video via Replicate and update DB."""

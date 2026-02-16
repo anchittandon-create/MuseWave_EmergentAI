@@ -6,7 +6,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
-import { Shield, Users, Music, Disc, Calendar, Search } from "lucide-react";
+import { Shield, Users, Music, Disc, Calendar, Search, PlayCircle, Download, FileText, X } from "lucide-react";
 
 const TAB_CONFIG = [
   { id: "tracks", label: "All Tracks" },
@@ -92,26 +92,6 @@ const uniqueSorted = (values) =>
     )
   ).sort((a, b) => a.localeCompare(b));
 
-const MediaThumbLink = ({ href, image, label }) => {
-  if (!href) return null;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="group inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] p-1.5 hover:border-primary/50 hover:bg-primary/10 transition-colors"
-    >
-      <img
-        src={image || MEDIA_PREVIEW_FALLBACK}
-        alt={label}
-        className="w-10 h-10 rounded object-cover border border-white/10"
-        loading="lazy"
-      />
-      <span className="text-xs text-primary group-hover:underline">{label}</span>
-    </a>
-  );
-};
-
 export default function MasterDashboardPage({ user }) {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("tracks");
@@ -125,6 +105,9 @@ export default function MasterDashboardPage({ user }) {
   const [toDate, setToDate] = useState("");
   const [sortField, setSortField] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [mediaModalRecord, setMediaModalRecord] = useState(null);
+  const [detailsModal, setDetailsModal] = useState(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -232,7 +215,7 @@ export default function MasterDashboardPage({ user }) {
 
   return (
     <div className="min-h-screen p-6 lg:p-10" data-testid="master-dashboard-page">
-      <div className="max-w-[1200px] mx-auto">
+      <div className="max-w-[1280px] mx-auto">
         <div className="mb-8 flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="font-display text-3xl lg:text-4xl font-bold tracking-tight mb-2 flex items-center gap-3">
@@ -268,134 +251,115 @@ export default function MasterDashboardPage({ user }) {
         </div>
 
         <div className="glass rounded-2xl p-5 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+            <div className="lg:col-span-5">
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">Search</Label>
               <div className="relative mt-1">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" placeholder="Track, album, user, mobile..." />
               </div>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">User Name</Label>
+            <div className="lg:col-span-3">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Sort By</Label>
               <select
                 className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                value={nameFilter}
-                onChange={(e) => setNameFilter(e.target.value)}
+                value={sortField}
+                onChange={(e) => setSortField(e.target.value)}
               >
-                <option value={FILTER_ALL}>All User Names</option>
-                {filterOptions.names.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+                {SORT_FIELD_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mobile</Label>
+            <div className="lg:col-span-2">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Order</Label>
               <select
                 className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                value={mobileFilter}
-                onChange={(e) => setMobileFilter(e.target.value)}
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
               >
-                <option value={FILTER_ALL}>All Mobile Numbers</option>
-                {filterOptions.mobiles.map((mobile) => (
-                  <option key={mobile} value={mobile}>{mobile}</option>
-                ))}
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
               </select>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Track / Album</Label>
-              <select
-                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                value={titleFilter}
-                onChange={(e) => setTitleFilter(e.target.value)}
+            <div className="lg:col-span-2 grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowAdvancedFilters((prev) => !prev)}
+                className="w-full"
               >
-                <option value={FILTER_ALL}>All Track/Album Names</option>
-                {filterOptions.titles.map((title) => (
-                  <option key={title} value={title}>{title}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Album</Label>
-              <select
-                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                value={albumFilter}
-                onChange={(e) => setAlbumFilter(e.target.value)}
+                {showAdvancedFilters ? "Less" : "More"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setSearch("");
+                  setNameFilter(FILTER_ALL);
+                  setMobileFilter(FILTER_ALL);
+                  setTitleFilter(FILTER_ALL);
+                  setAlbumFilter(FILTER_ALL);
+                  setFromDate(dateBounds.min);
+                  setToDate(dateBounds.max);
+                  setSortField("created_at");
+                  setSortOrder("desc");
+                }}
               >
-                <option value={FILTER_ALL}>All Albums</option>
-                {filterOptions.albums.map((album) => (
-                  <option key={album.value} value={album.value}>{album.label}</option>
-                ))}
-              </select>
+                Reset
+              </Button>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">From Date</Label>
-              <Input
-                type="date"
-                min={dateBounds.min || undefined}
-                max={dateBounds.max || undefined}
-                value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">To Date</Label>
-              <Input
-                type="date"
-                min={dateBounds.min || undefined}
-                max={dateBounds.max || undefined}
-                value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
-                className="mt-1"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2 md:col-span-2 lg:col-span-3">
+          </div>
+
+          {showAdvancedFilters && (
+            <div className="mt-4 pt-4 border-t border-white/10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
               <div>
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Sort By</Label>
-                <select
-                  className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                  value={sortField}
-                  onChange={(e) => setSortField(e.target.value)}
-                >
-                  {SORT_FIELD_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">User Name</Label>
+                <select className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={nameFilter} onChange={(e) => setNameFilter(e.target.value)}>
+                  <option value={FILTER_ALL}>All User Names</option>
+                  {filterOptions.names.map((name) => (
+                    <option key={name} value={name}>{name}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Order</Label>
-                <select
-                  className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                  value={sortOrder}
-                  onChange={(e) => setSortOrder(e.target.value)}
-                >
-                  <option value="desc">Descending</option>
-                  <option value="asc">Ascending</option>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Mobile</Label>
+                <select className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={mobileFilter} onChange={(e) => setMobileFilter(e.target.value)}>
+                  <option value={FILTER_ALL}>All Mobile Numbers</option>
+                  {filterOptions.mobiles.map((mobile) => (
+                    <option key={mobile} value={mobile}>{mobile}</option>
+                  ))}
                 </select>
               </div>
-              <div className="flex items-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => {
-                    setSearch("");
-                    setNameFilter(FILTER_ALL);
-                    setMobileFilter(FILTER_ALL);
-                    setTitleFilter(FILTER_ALL);
-                    setAlbumFilter(FILTER_ALL);
-                    setFromDate(dateBounds.min);
-                    setToDate(dateBounds.max);
-                    setSortField("created_at");
-                    setSortOrder("desc");
-                  }}
-                >
-                  Reset Filters
-                </Button>
+              <div>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Track / Album</Label>
+                <select className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={titleFilter} onChange={(e) => setTitleFilter(e.target.value)}>
+                  <option value={FILTER_ALL}>All Track/Album Names</option>
+                  {filterOptions.titles.map((title) => (
+                    <option key={title} value={title}>{title}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Album</Label>
+                <select className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={albumFilter} onChange={(e) => setAlbumFilter(e.target.value)}>
+                  <option value={FILTER_ALL}>All Albums</option>
+                  {filterOptions.albums.map((album) => (
+                    <option key={album.value} value={album.value}>{album.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">From Date</Label>
+                <Input type="date" min={dateBounds.min || undefined} max={dateBounds.max || undefined} value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">To Date</Label>
+                <Input type="date" min={dateBounds.min || undefined} max={dateBounds.max || undefined} value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-1" />
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -416,7 +380,7 @@ export default function MasterDashboardPage({ user }) {
         </div>
 
         <div className="glass rounded-2xl overflow-auto" data-testid="master-results-table">
-          <table className="w-full min-w-[1180px] text-sm">
+          <table className="w-full min-w-[1320px] text-sm">
             <thead className="bg-secondary/40">
               <tr>
                 <th className="text-left p-3 font-medium">Type</th>
@@ -426,12 +390,14 @@ export default function MasterDashboardPage({ user }) {
                 <th className="text-left p-3 font-medium">Mobile</th>
                 <th className="text-left p-3 font-medium">Created</th>
                 <th className="text-left p-3 font-medium">Duration</th>
-                <th className="text-left p-3 font-medium">Files</th>
+                <th className="text-left p-3 font-medium">Media</th>
+                <th className="text-left p-3 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {records.map((item) => {
                 const isAlbum = tab === "albums";
+                const previewTrack = isAlbum ? (item.songs || [])[0] : item;
                 return (
                   <tr key={`${tab}-${item.id}`} className="border-t border-white/5 hover:bg-white/[0.03]">
                     <td className="p-3">
@@ -459,22 +425,35 @@ export default function MasterDashboardPage({ user }) {
                     </td>
                     <td className="p-3">{isAlbum ? `${item.song_count || 0} tracks` : formatDuration(item.duration_seconds)}</td>
                     <td className="p-3">
-                      <div className="flex flex-wrap gap-2">
-                        {!isAlbum && (
-                          <MediaThumbLink
-                            href={item.audio_url}
-                            image={item.cover_art_url || MEDIA_PREVIEW_FALLBACK}
-                            label="Audio"
-                          />
+                      {!previewTrack ? (
+                        <span className="text-muted-foreground">-</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 gap-1"
+                          onClick={() => setMediaModalRecord({ ...previewTrack, title: isAlbum ? `${item.title} (Album Preview)` : previewTrack.title })}
+                        >
+                          <PlayCircle className="w-4 h-4" />
+                          Play
+                        </Button>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        {!isAlbum && item.audio_url && (
+                          <a href={item.audio_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                            <Download className="w-3 h-3" />Audio
+                          </a>
                         )}
-                        {!isAlbum && (
-                          <MediaThumbLink
-                            href={item.video_url}
-                            image={item.video_thumbnail || item.cover_art_url || MEDIA_PREVIEW_FALLBACK}
-                            label="Video"
-                          />
+                        {!isAlbum && item.video_url && (
+                          <a href={item.video_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                            <Download className="w-3 h-3" />Video
+                          </a>
                         )}
-                        {isAlbum && <span className="text-muted-foreground">-</span>}
+                        <Button size="sm" variant="ghost" className="h-8" onClick={() => setDetailsModal({ type: isAlbum ? "album" : "track", data: item })}>
+                          <FileText className="w-4 h-4" />
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -482,11 +461,150 @@ export default function MasterDashboardPage({ user }) {
               })}
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">No records matched your filters.</td>
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">No records matched your filters.</td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+
+        {mediaModalRecord && (
+          <MasterMediaModal
+            record={mediaModalRecord}
+            onClose={() => setMediaModalRecord(null)}
+          />
+        )}
+
+        {detailsModal && (
+          <MasterDetailsModal
+            type={detailsModal.type}
+            record={detailsModal.data}
+            onClose={() => setDetailsModal(null)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MasterMediaModal({ record, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
+      <div className="relative max-w-3xl w-full bg-card rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+        <div className="p-4 border-b border-white/5">
+          <h3 className="font-semibold truncate pr-12">{record.title || "Media Preview"}</h3>
+          <p className="text-xs text-muted-foreground mt-1">Duration: {formatDuration(record.duration_seconds)}</p>
+        </div>
+
+        <div className="p-4 space-y-4 max-h-[75vh] overflow-y-auto">
+          {record.audio_url ? (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Audio Player</p>
+              <audio src={record.audio_url} controls className="w-full" />
+              <a href={record.audio_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
+                <Download className="w-4 h-4" />
+                Download Audio
+              </a>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-white/10 bg-secondary/30 p-3 text-sm text-muted-foreground">
+              Audio is not available for this record.
+            </div>
+          )}
+
+          {record.video_url ? (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Video Player</p>
+              <video src={record.video_url} poster={record.video_thumbnail} controls className="w-full aspect-video bg-black rounded-xl" />
+              <a href={record.video_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
+                <Download className="w-4 h-4" />
+                Download Video
+              </a>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-white/10 bg-secondary/30 p-3 text-sm text-muted-foreground">
+              Video is not available for this record.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MasterDetailsModal({ type, record, onClose }) {
+  const fields = [
+    ["Title", record?.title],
+    ["Music Prompt", record?.music_prompt],
+    ["Genres", Array.isArray(record?.genres) ? record.genres.join(", ") : "-"],
+    ["Duration", type === "track" ? formatDuration(record?.duration_seconds) : `${record?.song_count || record?.songs?.length || 0} tracks`],
+    ["Vocal Languages", Array.isArray(record?.vocal_languages) ? record.vocal_languages.join(", ") : "-"],
+    ["Lyrics", record?.lyrics],
+    ["Artist Inspiration", record?.artist_inspiration],
+    ["Video Style", record?.video_style],
+    ["User", record?.user_name],
+    ["Mobile", record?.user_mobile],
+    ["Created", formatDate(record?.created_at)],
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
+      <div className="relative max-w-5xl w-full bg-card rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+        <div className="p-4 border-b border-white/5">
+          <h3 className="font-semibold truncate pr-12">See All Details: {record?.title || "Untitled"}</h3>
+          <p className="text-xs text-muted-foreground mt-1">{type === "album" ? "Album Details" : "Track Details"}</p>
+        </div>
+
+        <div className="p-4 max-h-[75vh] overflow-y-auto space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {fields.map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-white/10 bg-secondary/20 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">{label}</p>
+                <p className="text-sm whitespace-pre-wrap break-words">{value || "-"}</p>
+              </div>
+            ))}
+          </div>
+
+          {type === "album" && Array.isArray(record?.songs) && record.songs.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-semibold">Album Songs (All Inputs)</p>
+              {record.songs.map((song, idx) => (
+                <div key={song.id || `${idx}-${song.title}`} className="rounded-lg border border-white/10 bg-secondary/20 p-3">
+                  <p className="text-sm font-medium">{idx + 1}. {song.title || `Track ${idx + 1}`}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Prompt: {song.music_prompt || "-"}</p>
+                  <p className="text-xs text-muted-foreground">Genres: {(song.genres || []).join(", ") || "-"}</p>
+                  <p className="text-xs text-muted-foreground">Languages: {(song.vocal_languages || []).join(", ") || "-"}</p>
+                  <p className="text-xs text-muted-foreground">Duration: {formatDuration(song.duration_seconds || 0)}</p>
+                  <p className="text-xs text-muted-foreground line-clamp-3">Lyrics: {song.lyrics || "-"}</p>
+                  <div className="flex gap-2 mt-2">
+                    {song.audio_url && (
+                      <a href={song.audio_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                        <Download className="w-3 h-3" />Audio
+                      </a>
+                    )}
+                    {song.video_url && (
+                      <a href={song.video_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                        <Download className="w-3 h-3" />Video
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+            <p className="text-sm font-semibold mb-2">Raw Record (Complete)</p>
+            <pre className="text-xs text-muted-foreground overflow-x-auto whitespace-pre-wrap break-all">
+              {JSON.stringify(record, null, 2)}
+            </pre>
+          </div>
         </div>
       </div>
     </div>
