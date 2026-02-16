@@ -8,6 +8,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
+const DEFAULT_BACKEND_URL = "https://muzify-1.preview.emergentagent.com";
+
 const normalizeBackendUrl = (rawUrl) => {
   if (!rawUrl) return null;
   try {
@@ -29,10 +31,10 @@ const resolveBackendUrl = () => {
     if (host === "localhost" || host === "127.0.0.1") {
       return "http://localhost:8000";
     }
-    return window.location.origin.replace(/\/$/, "");
+    return DEFAULT_BACKEND_URL;
   }
 
-  return "http://localhost:8000";
+  return DEFAULT_BACKEND_URL;
 };
 
 const BACKEND_URL = resolveBackendUrl();
