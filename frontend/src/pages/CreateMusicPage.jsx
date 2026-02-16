@@ -9,7 +9,7 @@ import { Badge } from "../components/ui/badge";
 import { Sparkles, Music, Disc, Play, Pause, Download, Loader2, Search, X, ChevronDown, Film } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
-import { API } from "../App";
+import { API, SUGGEST_API } from "../App";
 
 export default function CreateMusicPage({ user }) {
   const [mode, setMode] = useState("single");
@@ -167,7 +167,7 @@ export default function CreateMusicPage({ user }) {
         };
       }
 
-      const response = await axios.post(`${API}/suggest`, {
+      const response = await axios.post(`${SUGGEST_API}/suggest`, {
         field,
         current_value: currentValue,
         context,
@@ -181,7 +181,7 @@ export default function CreateMusicPage({ user }) {
       toast.success("AI suggestion applied!", { duration: 2000 });
     } catch (error) {
       if (!error.response) {
-        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+        toast.error(`Cannot reach suggest backend at ${SUGGEST_API}. Set REACT_APP_SUGGEST_BACKEND_URL correctly.`);
       } else {
         toast.error(error.response?.data?.detail || "Failed to get suggestion");
       }

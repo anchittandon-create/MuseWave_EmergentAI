@@ -9,6 +9,7 @@ import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
 const DEFAULT_BACKEND_URL = "https://muzify-1.preview.emergentagent.com";
+const DEFAULT_SUGGEST_BACKEND_URL = "https://muse-wave-backend.vercel.app";
 const INVALID_BACKEND_HOSTS = new Set([
   "github.com",
   "www.github.com",
@@ -48,6 +49,18 @@ const resolveBackendUrl = () => {
 
 const BACKEND_URL = resolveBackendUrl();
 export const API = `${BACKEND_URL}/api`;
+
+const resolveSuggestBackendUrl = () => {
+  const configured = process.env.REACT_APP_SUGGEST_BACKEND_URL;
+  const normalizedConfigured = normalizeBackendUrl(configured);
+  if (normalizedConfigured) {
+    return normalizedConfigured;
+  }
+  return DEFAULT_SUGGEST_BACKEND_URL;
+};
+
+const SUGGEST_BACKEND_URL = resolveSuggestBackendUrl();
+export const SUGGEST_API = `${SUGGEST_BACKEND_URL}/api`;
 
 function App() {
   const [user, setUser] = useState(null);

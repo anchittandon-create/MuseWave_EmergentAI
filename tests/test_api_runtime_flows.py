@@ -77,6 +77,16 @@ class FakeDB:
         self.albums = FakeCollection()
 
 
+class TruthyCrashLegacyDB:
+    """Mimics pymongo db truthiness behavior (raises on bool evaluation)."""
+
+    def __init__(self):
+        self.users = FakeCollection()
+
+    def __bool__(self):  # pragma: no cover - explicitly behavior-based
+        raise NotImplementedError("Database objects do not implement truth value testing")
+
+
 class FakeCompletions:
     @staticmethod
     def create(*args, **kwargs):
@@ -157,7 +167,7 @@ def test_auth_and_dashboard_flow(test_client: TestClient):
         ("title", "Midnight Drive"),
         ("music_prompt", "BPM"),
         ("genres", "Electronic"),
-        ("vocal_languages", "English"),
+        ("vocal_languages", "__valid_language__"),
         ("lyrics", "hook"),
         ("artist_inspiration", "Weeknd"),
         ("video_style", "Urban"),
@@ -180,7 +190,10 @@ def test_field_specific_suggestions(test_client: TestClient, field: str, expecte
     assert res.status_code == 200, res.text
     suggestion = res.json()["suggestion"]
     assert suggestion
-    assert expected_key.lower() in suggestion.lower()
+    if expected_key == "__valid_language__":
+        assert suggestion == "Instrumental" or suggestion in server.LANGUAGE_KNOWLEDGE_BASE
+    else:
+        assert expected_key.lower() in suggestion.lower()
     if field == "lyrics":
         assert "once upon a time" not in suggestion.lower()
 
@@ -279,3 +292,36 @@ def test_replicate_url_extraction_callable_url():
 
     extracted = server._extract_replicate_media_url(FakeOutput())
     assert extracted == "https://replicate.delivery/output.mp4"
+
+
+def test_legacy_db_bool_regression(monkeypatch):
+    fake_db = FakeDB()
+    legacy = TruthyCrashLegacyDB()
+    legacy_user = {
+        "id": "legacy-user-1",
+        "name": "Legacy User",
+        "mobile": "1234500000",
+        "created_at": "2026-02-16T00:00:00+00:00",
+    }
+    legacy.users.docs.append(legacy_user)
+
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "legacy_db", legacy)
+    monkeypatch.setattr(server, "openai_client", FakeOpenAI())
+    monkeypatch.setattr(server, "OPENAI_API_KEY", "test-openai")
+    monkeypatch.setattr(server, "MUSICGEN_API_URL", None)
+    monkeypatch.setattr(server, "MUSICGEN_API_KEY", None)
+    monkeypatch.setattr(server, "REPLICATE_API_TOKEN", None)
+    monkeypatch.setattr(server, "RECENT_SUGGESTIONS", {})
+
+    client = TestClient(server.app)
+
+    # Health endpoint should not crash on legacy_db truthiness checks.
+    health_res = client.get("/api/health")
+    assert health_res.status_code == 200, health_res.text
+    assert health_res.json()["status"] == "healthy"
+
+    # Login should use legacy lookup path safely.
+    login_res = client.post("/api/auth/login", json={"mobile": legacy_user["mobile"]})
+    assert login_res.status_code == 200, login_res.text
+    assert login_res.json()["id"] == legacy_user["id"]

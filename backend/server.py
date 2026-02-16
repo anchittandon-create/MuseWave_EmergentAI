@@ -940,33 +940,63 @@ def _score_suggestion_relevance(field: str, suggestion: str, context: dict) -> i
     return 50
 
 def _fallback_suggestion(field: str, context: dict) -> str:
+    seed_source = f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}"
+    seed_val = int(hashlib.sha256(seed_source.encode()).hexdigest(), 16)
+
+    def pick(values: list[str], offset: int = 0) -> str:
+        if not values:
+            return ""
+        return values[(seed_val + offset) % len(values)]
+
     genres = context.get("genres", []) if isinstance(context.get("genres"), list) else []
     prompt = (context.get("music_prompt") or "").strip()
 
     if field == "title":
-        genre = genres[0] if genres else "Neon"
-        return f"{genre} Afterglow" if genre else "Midnight Pulse"
+        title_a = [
+            "Midnight", "Neon", "Afterdark", "Echo", "Velvet", "Pulse", "Aurora", "Signal", "Static", "Silver"
+        ]
+        title_b = [
+            "Drive", "Afterglow", "Voltage", "Reflex", "Horizon", "Frequency", "Momentum", "Skyline", "Rush", "Drift"
+        ]
+        genre = genres[0] if genres else ""
+        core = f"{pick(title_a)} {pick(title_b, 3)}".strip()
+        return f"{genre} {core}".strip() if genre else core
     if field == "music_prompt":
-        genre = ", ".join(genres[:2]) if genres else "Pop, Electronic"
-        base_prompt = prompt[:180] if prompt else "A polished modern track"
+        genre = ", ".join(genres[:2]) if genres else pick(["Pop, Electronic", "Electronic, Ambient", "R&B, Pop"])
+        bass_style = pick(["deep sub bass", "rubbery synth bass", "clean punchy low-end", "warm analog bass"], 2)
+        drum_style = pick(["tight kick-snare groove", "syncopated drum pattern", "driving four-on-the-floor drums", "crisp broken-beat drums"], 5)
+        top_style = pick(["airy vocal hook", "glassy lead motif", "plucked synth melody", "guitar-texture counterline"], 7)
+        mix_style = pick(["wide chorus lift", "focused mono-compatible low-end", "controlled transient punch", "clean vocal-forward balance"], 11)
+        base_prompt = prompt[:180] if prompt else "A polished modern track concept"
         return (
-            f"{base_prompt}. Build around {genre} with clear groove, melodic hook, dynamic chorus lift, "
-            "and clean low-end focused mix."
+            f"{base_prompt}. Build around {genre} with {drum_style}, {bass_style}, and {top_style}. "
+            f"Arrange with tension in the verse and a strong chorus payoff, keeping a {mix_style}."
         )
     if field == "genres":
         if genres:
-            return ", ".join(genres[:4])
-        return "Pop, Electronic"
+            pool = list(dict.fromkeys(genres + [pick(get_all_genres(), 13), pick(get_all_genres(), 29)]))
+            return ", ".join(pool[:4])
+        return ", ".join([pick(get_all_genres(), 3), pick(get_all_genres(), 17)])
     if field == "vocal_languages":
-        return "English"
+        lang_pool = [l for l in LANGUAGE_KNOWLEDGE_BASE if l != "Instrumental"]
+        return pick(lang_pool, 19)
     if field == "duration":
-        return "45s"
+        return pick(["30s", "38s", "45s", "52s", "1m10s", "1m24s"], 23)
     if field == "artist_inspiration":
-        return "The Weeknd, Dua Lipa, Tame Impala"
+        artists = get_all_artists()
+        a1 = pick(artists, 5)
+        a2 = pick(artists, 21)
+        a3 = pick(artists, 37)
+        return ", ".join([a1, a2, a3])
     if field == "video_style":
-        return "Night-time urban performance with moving handheld camera, warm practical lights, and rhythmic jump cuts synced to the beat."
+        color = pick(["neon teal + amber", "deep blue + magenta", "warm tungsten + red practicals", "silver monochrome"], 31)
+        camera = pick(["handheld push-ins", "slow tracking wides", "shoulder-level follow shots", "low-angle glide shots"], 41)
+        edit = pick(["rhythmic jump cuts", "long takes with beat-matched transitions", "strobe-accented cut points", "cross-dissolves on downbeats"], 47)
+        return f"Use {color} palette with {camera}. Keep lighting cinematic and motion-driven, then finish with {edit} aligned to the drum accents."
     if field == "lyrics":
-        return "A focused emotional hook about resilience after chaos, with one clear image that repeats in the chorus."
+        image = pick(["city lights in rain", "empty freeway at 2AM", "flickering hallway neon", "late-night window reflections"], 53)
+        arc = pick(["rebuild confidence", "escape emotional noise", "push through pressure", "choose clarity over chaos"], 59)
+        return f"A focused hook about how to {arc}, using {image} as the repeating chorus image."
     return "Creative suggestion"
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
@@ -1334,7 +1364,7 @@ Return only duration.""",
 @api_router.post("/auth/signup", response_model=UserResponse)
 async def signup(user_data: UserCreate):
     existing = await db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
-    if not existing and legacy_db:
+    if not existing and legacy_db is not None:
         existing = await legacy_db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Account with this mobile number already exists")
@@ -1349,7 +1379,7 @@ async def signup(user_data: UserCreate):
 @api_router.post("/auth/login", response_model=UserResponse)
 async def login(login_data: UserLogin):
     user = await db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
-    if not user and legacy_db:
+    if not user and legacy_db is not None:
         user = await legacy_db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="No account found. Please sign up first.")
@@ -2091,7 +2121,7 @@ async def api_health():
         "version": "3.0",
         "mode": "hybrid",
         "db_name": PRIMARY_DB_NAME,
-        "legacy_db_name": LEGACY_DB_NAME if legacy_db else None,
+        "legacy_db_name": LEGACY_DB_NAME if legacy_db is not None else None,
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": music_generation_mode,
         "music_generation_model": REPLICATE_MUSIC_MODEL if REPLICATE_API_TOKEN else None,
