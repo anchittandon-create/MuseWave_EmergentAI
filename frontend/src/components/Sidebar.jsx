@@ -81,6 +81,7 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
           {!isCollapsed && (
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium truncate">{user.name}</p>
+              <p className="text-[11px] text-primary/90 truncate">{user.role || "User"}</p>
               <p className="text-xs text-muted-foreground truncate font-mono">{user.mobile}</p>
             </div>
           )}

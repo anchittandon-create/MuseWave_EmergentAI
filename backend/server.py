@@ -48,6 +48,8 @@ db = client[PRIMARY_DB_NAME]
 legacy_db = client[LEGACY_DB_NAME] if LEGACY_DB_NAME != PRIMARY_DB_NAME else None
 # Permanent master user for global dashboard access.
 MASTER_ADMIN_MOBILE = "9873945238"
+MASTER_ADMIN_NAME = "Anchit Tandon"
+MASTER_ADMIN_ROLE = "Master User"
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -63,6 +65,7 @@ REPLICATE_MUSIC_OUTPUT_FORMAT = os.environ.get("REPLICATE_MUSIC_OUTPUT_FORMAT", 
 REPLICATE_MUSIC_NORMALIZATION_STRATEGY = os.environ.get("REPLICATE_MUSIC_NORMALIZATION_STRATEGY", "peak")
 REPLICATE_MUSIC_MAX_DURATION_SECONDS = int(os.environ.get("REPLICATE_MUSIC_MAX_DURATION_SECONDS", "30"))
 STRICT_REAL_MEDIA_OUTPUT = os.environ.get("STRICT_REAL_MEDIA_OUTPUT", "false").lower() == "true"
+FREE_TIER_MODE = os.environ.get("FREE_TIER_MODE", "false").lower() == "true"
 SUGGEST_MAX_ATTEMPTS = max(1, min(int(os.environ.get("SUGGEST_MAX_ATTEMPTS", "3")), 6))
 SUGGEST_OPENAI_TIMEOUT_SECONDS = max(
     2.0, min(float(os.environ.get("SUGGEST_OPENAI_TIMEOUT_SECONDS", "8")), 30.0)
@@ -264,12 +267,14 @@ class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     mobile: str
+    role: str = "User"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserResponse(BaseModel):
     id: str
     name: str
     mobile: str
+    role: str
     created_at: str
 
 class SongCreate(BaseModel):
@@ -562,6 +567,11 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     if used_audio_urls is None:
         used_audio_urls = set()
     provider_failures: list[str] = []
+
+    if FREE_TIER_MODE:
+        selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
+        used_audio_urls.add(selected["url"])
+        return selected["url"], selected["duration"], True, "free_curated_library"
 
     if MUSICGEN_API_URL:
         try:
@@ -1570,13 +1580,23 @@ async def signup(user_data: UserCreate):
         existing = await legacy_db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Account with this mobile number already exists")
-    
-    user = User(name=user_data.name, mobile=user_data.mobile)
+
+    is_master = user_data.mobile == MASTER_ADMIN_MOBILE
+    name = MASTER_ADMIN_NAME if is_master else user_data.name.strip()
+    role = MASTER_ADMIN_ROLE if is_master else "User"
+
+    user = User(name=name, mobile=user_data.mobile, role=role)
     doc = user.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc)
-    
-    return UserResponse(id=user.id, name=user.name, mobile=user.mobile, created_at=doc['created_at'])
+
+    return UserResponse(
+        id=user.id,
+        name=user.name,
+        mobile=user.mobile,
+        role=user.role,
+        created_at=doc['created_at']
+    )
 
 @api_router.post("/auth/login", response_model=UserResponse)
 async def login(login_data: UserLogin):
@@ -1585,8 +1605,16 @@ async def login(login_data: UserLogin):
         user = await legacy_db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="No account found. Please sign up first.")
-    
-    return UserResponse(id=user['id'], name=user['name'], mobile=user['mobile'], created_at=user['created_at'])
+
+    user = await _persist_normalized_user(user)
+
+    return UserResponse(
+        id=user['id'],
+        name=user['name'],
+        mobile=user['mobile'],
+        role=user.get('role', 'User'),
+        created_at=user['created_at']
+    )
 
 # ==================== AI Suggest Routes ====================
 
@@ -1662,6 +1690,17 @@ async def create_song(song_data: SongCreate):
     # Prepare video generation parameters for high quality
     video_params = enhance_video_generation_params(song_data.__dict__, song_data.video_style or "")
     
+    fallback_video_ready = bool(
+        song_data.generate_video
+        and (
+            FREE_TIER_MODE
+            or (not REPLICATE_API_TOKEN and not STRICT_REAL_MEDIA_OUTPUT)
+        )
+    )
+    video_thumbnail = generate_video_thumbnail(song_data.model_dump()) if fallback_video_ready else None
+    video_url = _SAMPLE_VIDEO_URL if fallback_video_ready else None
+    video_status = "completed" if fallback_video_ready else ("queued" if song_data.generate_video else None)
+
     song_doc = {
         "id": song_id,
         "title": title,
@@ -1674,7 +1713,10 @@ async def create_song(song_data: SongCreate):
         "generate_video": song_data.generate_video,
         "video_style": song_data.video_style or "",
         "audio_url": audio_url,
-        "video_url": None,
+        "video_url": video_url,
+        "video_thumbnail": video_thumbnail,
+        "video_status": video_status,
+        "video_generated_at": datetime.now(timezone.utc).isoformat() if fallback_video_ready else None,
         "cover_art_url": cover_art_url,
         "accuracy_percentage": accuracy_percentage,
         "album_id": song_data.album_id,
@@ -1823,6 +1865,24 @@ async def create_album(album_data: AlbumCreate):
             used_audio_urls,
         )
 
+        fallback_video_ready = bool(
+            album_data.generate_video
+            and (
+                FREE_TIER_MODE
+                or (not REPLICATE_API_TOKEN and not STRICT_REAL_MEDIA_OUTPUT)
+            )
+        )
+        video_thumbnail = generate_video_thumbnail(
+            {
+                "title": track_title,
+                "music_prompt": track_prompt,
+                "genres": track_genres,
+                "video_style": track_video_style,
+            }
+        ) if fallback_video_ready else None
+        video_url = _SAMPLE_VIDEO_URL if fallback_video_ready else None
+        video_status = "completed" if fallback_video_ready else ("queued" if album_data.generate_video else None)
+
         song_doc = {
             "id": str(uuid.uuid4()),
             "track_number": i + 1,
@@ -1836,7 +1896,10 @@ async def create_album(album_data: AlbumCreate):
             "generate_video": album_data.generate_video,
             "video_style": track_video_style,
             "audio_url": audio_url,
-            "video_url": None,
+            "video_url": video_url,
+            "video_thumbnail": video_thumbnail,
+            "video_status": video_status,
+            "video_generated_at": datetime.now(timezone.utc).isoformat() if fallback_video_ready else None,
             "cover_art_url": cover_art_url,
             "album_id": album_id,
             "user_id": album_data.user_id,
@@ -1869,10 +1932,46 @@ async def _get_user_by_id(user_id: str) -> Optional[dict]:
     return user
 
 
+def _normalized_user_profile(user: dict) -> dict:
+    mobile = str(user.get("mobile", "")).strip()
+    is_master = mobile == MASTER_ADMIN_MOBILE
+    name = str(user.get("name") or "").strip()
+    role = str(user.get("role") or "").strip()
+
+    if is_master:
+        name = MASTER_ADMIN_NAME
+        role = MASTER_ADMIN_ROLE
+    else:
+        if not name:
+            name = "User"
+        if not role:
+            role = "User"
+
+    normalized = dict(user)
+    normalized["name"] = name
+    normalized["role"] = role
+    return normalized
+
+
+async def _persist_normalized_user(user: dict) -> dict:
+    normalized = _normalized_user_profile(user)
+    update_fields = {}
+    if normalized.get("name") != user.get("name"):
+        update_fields["name"] = normalized["name"]
+    if normalized.get("role") != user.get("role"):
+        update_fields["role"] = normalized["role"]
+    if update_fields and normalized.get("id"):
+        await db.users.update_one({"id": normalized["id"]}, {"$set": update_fields}, upsert=True)
+        if legacy_db is not None:
+            await legacy_db.users.update_one({"id": normalized["id"]}, {"$set": update_fields})
+    return normalized
+
+
 async def _ensure_master_access(user_id: str) -> dict:
     user = await _get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    user = await _persist_normalized_user(user)
     if user.get("mobile") != MASTER_ADMIN_MOBILE:
         raise HTTPException(status_code=403, detail="Master dashboard access denied")
     return user
@@ -2239,7 +2338,7 @@ async def _run_video_generation_task(song_id: str, user_id: str):
             return
         video_thumbnail = generate_video_thumbnail(song)
         loop = asyncio.get_running_loop()
-        video_url = await loop.run_in_executor(None, lambda: _generate_video_via_replicate(song))
+        video_url = None if FREE_TIER_MODE else await loop.run_in_executor(None, lambda: _generate_video_via_replicate(song))
         if not video_url:
             if STRICT_REAL_MEDIA_OUTPUT:
                 await db.songs.update_one(
@@ -2308,7 +2407,7 @@ async def generate_song_video(song_id: str, user_id: str, background_tasks: Back
 
         video_thumbnail = generate_video_thumbnail(song)
 
-        if REPLICATE_API_TOKEN:
+        if REPLICATE_API_TOKEN and not FREE_TIER_MODE:
             await db.songs.update_one(
                 {"id": song_id},
                 {"$set": {"video_status": "processing", "video_thumbnail": video_thumbnail}}
@@ -2381,7 +2480,7 @@ async def generate_album_videos(album_id: str, user_id: str, background_tasks: B
         for song in songs:
             try:
                 video_thumbnail = generate_video_thumbnail(song)
-                if REPLICATE_API_TOKEN:
+                if REPLICATE_API_TOKEN and not FREE_TIER_MODE:
                     await db.songs.update_one(
                         {"id": song["id"]},
                         {"$set": {"video_status": "processing", "video_thumbnail": video_thumbnail}},
@@ -2405,7 +2504,7 @@ async def generate_album_videos(album_id: str, user_id: str, background_tasks: B
             except Exception as e:
                 logger.error(f"Error starting video for song {song.get('id')}: {e}")
 
-        msg = "AI video generation started for all tracks. Refresh in 1-2 minutes." if REPLICATE_API_TOKEN else "Videos ready."
+        msg = "AI video generation started for all tracks. Refresh in 1-2 minutes." if (REPLICATE_API_TOKEN and not FREE_TIER_MODE) else "Videos ready."
         return {
             "album_id": album_id,
             "total_videos_generated": len(generated),
@@ -2444,7 +2543,9 @@ async def root():
 
 @api_router.get("/health")
 async def api_health():
-    if MUSICGEN_API_URL:
+    if FREE_TIER_MODE:
+        music_generation_mode = "free_curated_library"
+    elif MUSICGEN_API_URL:
         music_generation_mode = "external_music_provider"
     elif REPLICATE_API_TOKEN:
         music_generation_mode = f"replicate:{REPLICATE_MUSIC_MODEL}"
@@ -2459,8 +2560,9 @@ async def api_health():
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": music_generation_mode,
         "music_generation_model": REPLICATE_MUSIC_MODEL if REPLICATE_API_TOKEN else None,
-        "video_generation": "configured" if REPLICATE_API_TOKEN else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
+        "video_generation": "configured" if (REPLICATE_API_TOKEN and not FREE_TIER_MODE) else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
         "strict_real_media_output": STRICT_REAL_MEDIA_OUTPUT,
+        "free_tier_mode": FREE_TIER_MODE,
         "features": ["ai_suggestions", "lyrics_synthesis", "album_per_track_inputs", "knowledge_bases"],
     }
 

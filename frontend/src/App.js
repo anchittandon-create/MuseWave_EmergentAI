@@ -9,7 +9,7 @@ import { DocumentationPage } from "./pages/DocumentationPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
-const DEFAULT_BACKEND_URL = "https://muzify-1.preview.emergentagent.com";
+const DEFAULT_BACKEND_URL = "https://muse-wave-backend.vercel.app";
 const DEFAULT_SUGGEST_BACKEND_URL = "https://muse-wave-backend.vercel.app";
 const INVALID_BACKEND_HOSTS = new Set([
   "github.com",
@@ -69,7 +69,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("musewave_user") || localStorage.getItem("muzify_user");
+    const savedUser = localStorage.getItem("musewave_user");
     if (savedUser) {
       setUser(JSON.parse(savedUser));
     }
@@ -84,7 +84,6 @@ function App() {
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem("musewave_user");
-    localStorage.removeItem("muzify_user");
   };
 
   if (loading) {
