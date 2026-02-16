@@ -302,6 +302,7 @@ class AISuggestRequest(BaseModel):
     field: str
     current_value: Optional[str] = ""
     context: dict = Field(default_factory=dict)
+    user_id: Optional[str] = None
 
 # ==================== Uniqueness Utilities ====================
 
@@ -484,6 +485,57 @@ def _remember_suggestion(field: str, suggestion: str) -> bool:
     bucket.append(text)
     RECENT_SUGGESTIONS[field] = bucket[-30:]
     return True
+
+
+def _normalize_suggestion_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _build_suggestion_scope_key(field: str, context: dict, user_id: Optional[str]) -> str:
+    compact_context = {
+        "music_prompt": (context.get("music_prompt") or "")[:280],
+        "genres": context.get("genres", [])[:6] if isinstance(context.get("genres"), list) else [],
+        "lyrics": (context.get("lyrics") or "")[:180],
+        "artist_inspiration": (context.get("artist_inspiration") or "")[:180],
+        "album_context": (context.get("album_context") or "")[:140],
+        "track_number": context.get("track_number"),
+    }
+    scope_payload = f"{user_id or 'global'}|{field}|{json.dumps(compact_context, sort_keys=True, ensure_ascii=True)}"
+    return hashlib.sha256(scope_payload.encode()).hexdigest()[:40]
+
+
+async def _load_recent_scope_suggestions(field: str, scope_key: str, limit: int = 40) -> set[str]:
+    seen = set(RECENT_SUGGESTIONS.get(field, []))
+    history_collection = getattr(db, "suggestion_history", None)
+    if history_collection is None:
+        return seen
+    try:
+        docs = await history_collection.find({"field": field, "scope_key": scope_key}, {"_id": 0}).to_list(limit)
+        docs.sort(key=lambda d: d.get("created_at", ""), reverse=True)
+        for doc in docs[:limit]:
+            norm = _normalize_suggestion_text(doc.get("suggestion", ""))
+            if norm:
+                seen.add(norm)
+    except Exception as exc:
+        logger.warning("Suggestion history read failed: %s", exc)
+    return seen
+
+
+async def _persist_scope_suggestion(field: str, scope_key: str, suggestion: str, user_id: Optional[str]) -> None:
+    history_collection = getattr(db, "suggestion_history", None)
+    if history_collection is None:
+        return
+    try:
+        await history_collection.insert_one({
+            "id": str(uuid.uuid4()),
+            "field": field,
+            "scope_key": scope_key,
+            "user_id": user_id,
+            "suggestion": suggestion,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.warning("Suggestion history write failed: %s", exc)
 
 async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str]:
     """
@@ -939,7 +991,7 @@ def _score_suggestion_relevance(field: str, suggestion: str, context: dict) -> i
 
     return 50
 
-def _fallback_suggestion(field: str, context: dict) -> str:
+def _fallback_suggestion(field: str, context: dict, avoid_texts: Optional[set[str]] = None) -> str:
     seed_source = (
         f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|"
         f"{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}"
@@ -964,6 +1016,8 @@ def _fallback_suggestion(field: str, context: dict) -> str:
         if not cleaned:
             return ""
         recent = set(RECENT_SUGGESTIONS.get(field_name, []))
+        if avoid_texts:
+            recent.update({(x or "").strip().lower() for x in avoid_texts if x})
         start = seed_val % len(cleaned)
         for i in range(len(cleaned)):
             candidate = cleaned[(start + i) % len(cleaned)]
@@ -1048,21 +1102,44 @@ def _fallback_suggestion(field: str, context: dict) -> str:
 
     return "Creative suggestion"
 
-async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
+async def generate_ai_suggestion(
+    field: str,
+    current_value: str,
+    context: dict,
+    user_id: Optional[str] = None,
+) -> str:
     """Generate diverse, production-ready, music-specific suggestions."""
+    context = context or {}
+    scope_key = _build_suggestion_scope_key(field, context, user_id)
+    seen_in_scope = await _load_recent_scope_suggestions(field, scope_key)
+
     if not openai_client:
+        fallback = _fallback_suggestion(field, context, seen_in_scope)
+        if field in ["genres", "vocal_languages"]:
+            fallback = validate_list_suggestion(field, fallback)
+        if field == "duration":
+            fallback = validate_duration_suggestion(fallback)
+        if fallback:
+            _remember_suggestion(field, fallback)
+            await _persist_scope_suggestion(field, scope_key, fallback, user_id)
+            return fallback
         raise HTTPException(
             status_code=500,
-            detail="OPENAI_API_KEY is missing. Configure it in backend .env for AI suggestions.",
+            detail="OPENAI_API_KEY is missing and fallback suggestion failed.",
         )
 
-    context = context or {}
     system_prompt = build_field_system_prompt(field)
     candidates: list[tuple[int, str]] = []
 
     for _ in range(7):
         uniqueness_seed = generate_uniqueness_seed()
-        prompt = build_suggestion_prompt(field, current_value, context, uniqueness_seed)
+        prompt = build_suggestion_prompt(
+            field,
+            current_value,
+            context,
+            uniqueness_seed,
+            list(seen_in_scope)[:8],
+        )
         try:
             response = await asyncio.to_thread(
                 lambda: openai_client.chat.completions.create(
@@ -1086,12 +1163,17 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
                 suggestion = suggestion.split("\n\n")[0].strip()
             if not suggestion:
                 continue
+            normalized = _normalize_suggestion_text(suggestion)
+            if normalized in seen_in_scope:
+                continue
 
             relevance = _score_suggestion_relevance(field, suggestion, context)
             if relevance >= 58:
                 candidates.append((relevance, suggestion))
 
             if relevance >= 88 and _remember_suggestion(field, suggestion):
+                seen_in_scope.add(normalized)
+                await _persist_scope_suggestion(field, scope_key, suggestion, user_id)
                 return suggestion
         except Exception as e:
             logger.error(f"AI suggestion error for {field}: {e}")
@@ -1099,18 +1181,22 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
         for _, candidate in candidates:
+            normalized = _normalize_suggestion_text(candidate)
+            if normalized in seen_in_scope:
+                continue
             if _remember_suggestion(field, candidate):
+                seen_in_scope.add(normalized)
+                await _persist_scope_suggestion(field, scope_key, candidate, user_id)
                 return candidate
-        return candidates[0][1]
 
-    fallback = _fallback_suggestion(field, context)
+    fallback = _fallback_suggestion(field, context, seen_in_scope)
     if field in ["genres", "vocal_languages"]:
         fallback = validate_list_suggestion(field, fallback)
     if field == "duration":
         fallback = validate_duration_suggestion(fallback)
-    if fallback and _remember_suggestion(field, fallback):
-        return fallback
     if fallback:
+        _remember_suggestion(field, fallback)
+        await _persist_scope_suggestion(field, scope_key, fallback, user_id)
         return fallback
 
     raise HTTPException(status_code=502, detail=f"AI suggestion failed for field '{field}'.")
@@ -1295,7 +1381,13 @@ Requirements:
         logger.error(f"Lyrics generation error: {e}")
         return ""
 
-def build_suggestion_prompt(field: str, current_value: str, context: dict, seed: str) -> str:
+def build_suggestion_prompt(
+    field: str,
+    current_value: str,
+    context: dict,
+    seed: str,
+    avoid_suggestions: Optional[list[str]] = None,
+) -> str:
     context = context or {}
     compact_context = {
         "music_prompt": (context.get("music_prompt") or "")[:280],
@@ -1309,6 +1401,11 @@ def build_suggestion_prompt(field: str, current_value: str, context: dict, seed:
     allowed_genres = ", ".join(get_all_genres())
     allowed_langs = ", ".join(LANGUAGE_KNOWLEDGE_BASE)
     known_artists = ", ".join(get_all_artists())
+    avoid_text = ""
+    if avoid_suggestions:
+        filtered = [item.strip() for item in avoid_suggestions if item and item.strip()]
+        if filtered:
+            avoid_text = f"\nAvoid these recent suggestions: {', '.join(filtered[:8])}"
 
     prompts = {
         "title": f"""Field: title
@@ -1321,6 +1418,7 @@ Rules:
 - no archaic/fantasy words
 - no punctuation-heavy output
 - no explanation
+{avoid_text}
 Return only the title.""",
 
         "music_prompt": f"""Field: music_prompt
@@ -1333,6 +1431,7 @@ Rules:
 - include instrumentation, groove, arrangement direction, and mixing cues
 - must be directly usable to generate a track
 - no explanation wrapper
+{avoid_text}
 Return only the prompt text.""",
 
         "genres": f"""Field: genres
@@ -1344,6 +1443,7 @@ Rules:
 - comma-separated only
 - use names from allowed list
 - no explanation
+{avoid_text}
 Return only comma-separated genres.""",
 
         "vocal_languages": f"""Field: vocal_languages
@@ -1355,6 +1455,7 @@ Rules:
 - comma-separated only
 - use names from allowed list
 - no explanation
+{avoid_text}
 Return only comma-separated languages.""",
 
         "lyrics": f"""Field: lyrics
@@ -1367,6 +1468,7 @@ Rules:
 - clear emotional direction and hook idea
 - no storybook style
 - no explanation wrapper
+{avoid_text}
 Return only the concept text.""",
 
         "artist_inspiration": f"""Field: artist_inspiration
@@ -1378,6 +1480,7 @@ Rules:
 - comma-separated names only
 - use globally known and musically relevant artists
 - no explanation
+{avoid_text}
 Return only comma-separated artist names.""",
 
         "video_style": f"""Field: video_style
@@ -1390,6 +1493,7 @@ Rules:
 - include color/lighting, camera movement, and editing rhythm
 - directly tied to the song mood
 - no explanation wrapper
+{avoid_text}
 Return only the visual direction text.""",
 
         "duration": f"""Field: duration
@@ -1400,6 +1504,7 @@ Task: suggest one practical duration.
 Rules:
 - return only one value like 30s, 45s, 1m20s, or 2:30
 - no explanation
+{avoid_text}
 Return only duration.""",
     }
 
@@ -1439,7 +1544,12 @@ async def login(login_data: UserLogin):
 
 @api_router.post("/suggest")
 async def ai_suggest(request: AISuggestRequest):
-    suggestion = await generate_ai_suggestion(request.field, request.current_value or "", request.context)
+    suggestion = await generate_ai_suggestion(
+        request.field,
+        request.current_value or "",
+        request.context,
+        request.user_id,
+    )
     return {"suggestion": suggestion, "field": request.field}
 
 # ==================== Song Creation ====================

@@ -171,6 +171,7 @@ export default function CreateMusicPage({ user }) {
         field,
         current_value: currentValue,
         context,
+        user_id: user?.id || null,
       });
 
       if (mode === "album" && songIndex !== null) {

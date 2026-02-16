@@ -75,6 +75,7 @@ class FakeDB:
         self.users = FakeCollection()
         self.songs = FakeCollection()
         self.albums = FakeCollection()
+        self.suggestion_history = FakeCollection()
 
 
 class TruthyCrashLegacyDB:
@@ -126,6 +127,27 @@ class FakeCompletions:
 class FakeOpenAI:
     def __init__(self):
         self.chat = SimpleNamespace(completions=FakeCompletions())
+
+
+class FixedTitleCompletions:
+    @staticmethod
+    def create(*args, **kwargs):
+        messages = kwargs.get("messages", [])
+        prompt = messages[-1]["content"] if messages else ""
+        if "Field: title" in prompt:
+            content = "Electronic Afterglow"
+        elif "Field: duration" in prompt:
+            content = "45s"
+        else:
+            content = "Electronic, Pop"
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+
+class FixedTitleOpenAI:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=FixedTitleCompletions())
 
 
 @pytest.fixture()
@@ -292,6 +314,28 @@ def test_replicate_url_extraction_callable_url():
 
     extracted = server._extract_replicate_media_url(FakeOutput())
     assert extracted == "https://replicate.delivery/output.mp4"
+
+
+def test_repeated_title_suggest_is_deduplicated(test_client: TestClient, monkeypatch):
+    monkeypatch.setattr(server, "openai_client", FixedTitleOpenAI())
+    user = _signup_and_login(test_client)
+    payload = {
+        "field": "title",
+        "current_value": "",
+        "context": {
+            "music_prompt": "dark electronic pop with punchy drums",
+            "genres": ["Electronic", "Pop"],
+            "lyrics": "",
+            "artist_inspiration": "",
+        },
+        "user_id": user["id"],
+    }
+    suggestions = []
+    for _ in range(3):
+        res = test_client.post("/api/suggest", json=payload)
+        assert res.status_code == 200, res.text
+        suggestions.append(res.json()["suggestion"])
+    assert len(set(suggestions)) >= 2
 
 
 def test_legacy_db_bool_regression(monkeypatch):
