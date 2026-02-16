@@ -8,9 +8,20 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
+const normalizeBackendUrl = (rawUrl) => {
+  if (!rawUrl) return null;
+  try {
+    return new URL(rawUrl).origin;
+  } catch {
+    return rawUrl.replace(/\/+$/, "").replace(/\/dashboard$/i, "");
+  }
+};
+
 const resolveBackendUrl = () => {
-  if (process.env.REACT_APP_BACKEND_URL) {
-    return process.env.REACT_APP_BACKEND_URL.replace(/\/$/, "");
+  const configured = process.env.REACT_APP_BACKEND_URL || process.env.REACT_APP_BACKEND_UR;
+  const normalizedConfigured = normalizeBackendUrl(configured);
+  if (normalizedConfigured) {
+    return normalizedConfigured;
   }
 
   if (typeof window !== "undefined") {
