@@ -447,10 +447,10 @@ def _build_musicgen_prompt(song_payload: dict) -> str:
         parts.append(f"Lyrics theme: {lyrics[:260]}")
     return ". ".join(parts) if parts else "Create a high-quality, original instrumental music track."
 
-def _generate_music_via_replicate(song_payload: dict) -> Optional[str]:
+def _generate_music_via_replicate(song_payload: dict) -> tuple[Optional[str], Optional[str]]:
     """Generate music track via Replicate-hosted MusicGen model."""
     if not REPLICATE_API_TOKEN:
-        return None
+        return None, "REPLICATE_API_TOKEN is not configured"
     try:
         import replicate
         os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
@@ -471,18 +471,21 @@ def _generate_music_via_replicate(song_payload: dict) -> Optional[str]:
             {**base_params, "duration_seconds": duration},
             base_params,
         ]
+        last_error = "Replicate returned no usable output"
         for params in input_attempts:
             try:
                 output = replicate.run(REPLICATE_MUSIC_MODEL, input=params)
                 audio_url = _extract_replicate_media_url(output)
                 if audio_url:
-                    return audio_url
+                    return audio_url, None
+                last_error = "Replicate response did not contain an audio URL"
             except Exception as e:
+                last_error = str(e)
                 logger.warning("Replicate MusicGen attempt failed (%s): %s", params.keys(), e)
-        return None
+        return None, last_error
     except Exception as e:
         logger.warning("Replicate MusicGen setup failed: %s", e)
-        return None
+        return None, str(e)
 
 def _remember_suggestion(field: str, suggestion: str) -> bool:
     """Returns True if suggestion is unique in recent memory for a field."""
@@ -557,6 +560,7 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     """
     if used_audio_urls is None:
         used_audio_urls = set()
+    provider_failures: list[str] = []
 
     if MUSICGEN_API_URL:
         try:
@@ -581,6 +585,7 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 )
             )
             if response.status_code >= 400:
+                provider_failures.append(f"MUSICGEN provider HTTP {response.status_code}")
                 logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
             else:
                 data = response.json() if response.content else {}
@@ -588,21 +593,30 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 if audio_url:
                     duration = int(data.get("duration_seconds") or song_payload.get("duration_seconds") or 30)
                     return audio_url, duration, False, "external_music_provider"
+                provider_failures.append("MUSICGEN provider response missing audio URL")
                 logger.warning("Music provider response missing audio url: %s", str(data)[:300])
         except Exception as exc:
+            provider_failures.append(f"MUSICGEN provider exception: {type(exc).__name__}")
             logger.warning("Music provider exception: %s", exc)
 
     if REPLICATE_API_TOKEN:
-        replicate_audio_url = await asyncio.to_thread(lambda: _generate_music_via_replicate(song_payload))
+        replicate_audio_url, replicate_error = await asyncio.to_thread(
+            lambda: _generate_music_via_replicate(song_payload)
+        )
         if replicate_audio_url:
             requested_duration = int(song_payload.get("duration_seconds") or 30)
             duration = max(5, min(requested_duration, REPLICATE_MUSIC_MAX_DURATION_SECONDS))
             return replicate_audio_url, duration, False, f"replicate:{REPLICATE_MUSIC_MODEL}"
+        if replicate_error:
+            provider_failures.append(f"Replicate: {replicate_error[:220]}")
+    else:
+        provider_failures.append("Replicate token missing")
 
     if STRICT_REAL_MEDIA_OUTPUT:
+        provider_summary = "; ".join(provider_failures[:2]) if provider_failures else "No provider diagnostics available"
         raise HTTPException(
             status_code=502,
-            detail="Real music generation failed. Configure provider keys/quota for MUSICGEN or Replicate.",
+            detail=f"Real music generation failed. {provider_summary}",
         )
 
     selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
