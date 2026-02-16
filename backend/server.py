@@ -32,6 +32,7 @@ import requests
 from PIL import Image, ImageDraw
 import json
 import re
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -410,6 +411,7 @@ def select_audio_for_genres(genres: List[str], used_urls: set = None, song_paylo
             str(song_payload.get("artist_inspiration") or ""),
             str(song_payload.get("lyrics") or "")[:80],
             str(requested_duration),
+            generate_uniqueness_seed(),
         ]
     )
 
@@ -489,6 +491,36 @@ def _extract_replicate_media_url(output) -> Optional[str]:
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             return url
     return None
+
+
+_DEMO_MEDIA_HOSTS = {"www.soundhelix.com", "soundhelix.com", "samplelib.com", "download.samplelib.com"}
+
+
+def _append_query_param(url: str, key: str, value: str) -> str:
+    try:
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query[key] = value
+        return urlunparse(parsed._replace(query=urlencode(query)))
+    except Exception:
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}{key}={value}"
+
+
+def _make_unique_media_url(url: str, force: bool = False) -> str:
+    """
+    Ensure unique media URL per generation for demo/fallback assets.
+    We only mutate known static demo hosts unless `force` is True.
+    """
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        if force or host in _DEMO_MEDIA_HOSTS:
+            token = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
+            return _append_query_param(url, "mwv", token)
+        return url
+    except Exception:
+        return url
 
 def _build_musicgen_prompt(song_payload: dict) -> str:
     """Construct a detailed, music-focused prompt for generation providers."""
@@ -616,6 +648,28 @@ async def _persist_scope_suggestion(field: str, scope_key: str, suggestion: str,
     except Exception as exc:
         logger.warning("Suggestion history write failed: %s", exc)
 
+
+async def _next_scope_turn(field: str, scope_key: str) -> int:
+    counters = getattr(db, "suggestion_counters", None)
+    if counters is None:
+        return random.randint(1, 999999)
+    try:
+        await counters.update_one(
+            {"field": field, "scope_key": scope_key},
+            {
+                "$inc": {"turn": 1},
+                "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()},
+            },
+            upsert=True,
+        )
+        doc = await counters.find_one({"field": field, "scope_key": scope_key}, {"_id": 0, "turn": 1})
+        if doc and isinstance(doc.get("turn"), int):
+            return max(1, doc["turn"])
+    except Exception as exc:
+        logger.warning("Suggestion turn counter failed: %s", exc)
+    return random.randint(1, 999999)
+
 async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str]:
     """
     Generate/obtain track audio.
@@ -632,7 +686,8 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
         selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls, song_payload)
         used_audio_urls.add(selected["url"])
         requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
-        return selected["url"], requested_duration, True, "free_curated_library"
+        unique_url = _make_unique_media_url(selected["url"])
+        return unique_url, requested_duration, True, "free_curated_library"
 
     if MUSICGEN_API_URL:
         try:
@@ -694,7 +749,8 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls, song_payload)
     used_audio_urls.add(selected["url"])
     requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
-    return selected["url"], requested_duration, True, "curated_demo_library"
+    unique_url = _make_unique_media_url(selected["url"])
+    return unique_url, requested_duration, True, "curated_demo_library"
 
 def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate | dict) -> float:
     """Calculate accuracy percentage of selected audio against input parameters
@@ -1094,10 +1150,16 @@ def _score_suggestion_relevance(field: str, suggestion: str, context: dict) -> i
 
     return 50
 
-def _fallback_suggestion(field: str, context: dict, avoid_texts: Optional[set[str]] = None) -> str:
+def _fallback_suggestion(
+    field: str,
+    context: dict,
+    avoid_texts: Optional[set[str]] = None,
+    turn_hint: Optional[int] = None,
+) -> str:
     seed_source = (
         f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|"
-        f"{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}"
+        f"{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}|"
+        f"{turn_hint if turn_hint is not None else ''}"
     )
     seed_val = int(hashlib.sha256(seed_source.encode()).hexdigest(), 16)
 
@@ -1175,7 +1237,18 @@ def _fallback_suggestion(field: str, context: dict, avoid_texts: Optional[set[st
         return pick_unique(lang_pool)
 
     if field == "duration":
-        return pick_unique(["30s", "38s", "45s", "52s", "1m10s", "1m24s", "1m36s", "2m00s"])
+        # Keep duration suggestions practical for music generation UX while remaining unique.
+        base = max(20, min(300, 20 + (seed_val % 260)))
+        durations = set()
+        offsets = [0, 3, 7, 11, 19, 27, 31, 43, 59]
+        for off in offsets:
+            sec = max(20, min(360, base + off))
+            if sec < 60:
+                durations.add(f"{sec}s")
+            else:
+                m, s = divmod(sec, 60)
+                durations.add(f"{m}m{s}s" if s else f"{m}m")
+        return pick_unique(list(durations))
 
     if field == "artist_inspiration":
         artists = get_all_artists()
@@ -1221,14 +1294,26 @@ async def generate_ai_suggestion(
     context = context or {}
     scope_key = _build_suggestion_scope_key(field, context, user_id)
     seen_in_scope = await _load_recent_scope_suggestions(field, scope_key)
+    suggestion_turn = await _next_scope_turn(field, scope_key)
 
     if not openai_client:
-        fallback = _fallback_suggestion(field, context, seen_in_scope)
+        fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
         if field in ["genres", "vocal_languages"]:
             fallback = validate_list_suggestion(field, fallback)
         if field == "duration":
             fallback = validate_duration_suggestion(fallback)
         if fallback:
+            normalized_fallback = _normalize_suggestion_text(fallback)
+            if normalized_fallback in seen_in_scope:
+                for i in range(1, 10):
+                    candidate = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn + i)
+                    if field in ["genres", "vocal_languages"]:
+                        candidate = validate_list_suggestion(field, candidate)
+                    if field == "duration":
+                        candidate = validate_duration_suggestion(candidate)
+                    if candidate and _normalize_suggestion_text(candidate) not in seen_in_scope:
+                        fallback = candidate
+                        break
             _remember_suggestion(field, fallback)
             await _persist_scope_suggestion(field, scope_key, fallback, user_id)
             return fallback
@@ -1246,7 +1331,7 @@ async def generate_ai_suggestion(
             field,
             current_value,
             context,
-            uniqueness_seed,
+            f"{uniqueness_seed}-turn{suggestion_turn}",
             list(seen_in_scope)[:8],
         )
         try:
@@ -1309,11 +1394,22 @@ async def generate_ai_suggestion(
                 await _persist_scope_suggestion(field, scope_key, candidate, user_id)
                 return candidate
 
-    fallback = _fallback_suggestion(field, context, seen_in_scope)
+    fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
     if field in ["genres", "vocal_languages"]:
         fallback = validate_list_suggestion(field, fallback)
     if field == "duration":
         fallback = validate_duration_suggestion(fallback)
+    normalized_fallback = _normalize_suggestion_text(fallback)
+    if normalized_fallback in seen_in_scope:
+        for i in range(1, 20):
+            candidate = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn + i)
+            if field in ["genres", "vocal_languages"]:
+                candidate = validate_list_suggestion(field, candidate)
+            if field == "duration":
+                candidate = validate_duration_suggestion(candidate)
+            if candidate and _normalize_suggestion_text(candidate) not in seen_in_scope:
+                fallback = candidate
+                break
     if fallback:
         _remember_suggestion(field, fallback)
         await _persist_scope_suggestion(field, scope_key, fallback, user_id)
@@ -1710,8 +1806,13 @@ async def create_song(song_data: SongCreate):
         except:
             title = f"Track {uuid.uuid4().hex[:6].upper()}"
     
-    # Generate real track (if provider configured) or fallback to curated demo library
-    audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(song_data.model_dump())
+    # Generate real track (if provider configured) or fallback to curated demo library.
+    # Prime used URLs from recent user history to maximize uniqueness across requests.
+    used_audio_urls = await _load_recent_user_audio_urls(song_data.user_id)
+    audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
+        song_data.model_dump(),
+        used_audio_urls=used_audio_urls,
+    )
     audio_data = {
         "url": audio_url,
         "duration": actual_duration,
@@ -1760,7 +1861,7 @@ async def create_song(song_data: SongCreate):
         )
     )
     video_thumbnail = generate_video_thumbnail(song_data.model_dump()) if fallback_video_ready else None
-    video_url = _SAMPLE_VIDEO_URL if fallback_video_ready else None
+    video_url = _make_unique_media_url(_SAMPLE_VIDEO_URL) if fallback_video_ready else None
     video_status = "completed" if fallback_video_ready else ("queued" if song_data.generate_video else None)
 
     song_doc = {
@@ -1867,7 +1968,7 @@ async def create_album(album_data: AlbumCreate):
     album_doc.pop("_id", None)
 
     songs = []
-    used_audio_urls = set()
+    used_audio_urls = await _load_recent_user_audio_urls(album_data.user_id)
     track_moods = ["energetic opener", "introspective", "building momentum", "peak energy", "reflective closer"]
 
     for i in range(num_tracks):
@@ -1942,7 +2043,7 @@ async def create_album(album_data: AlbumCreate):
                 "video_style": track_video_style,
             }
         ) if fallback_video_ready else None
-        video_url = _SAMPLE_VIDEO_URL if fallback_video_ready else None
+        video_url = _make_unique_media_url(_SAMPLE_VIDEO_URL) if fallback_video_ready else None
         video_status = "completed" if fallback_video_ready else ("queued" if album_data.generate_video else None)
 
         song_doc = {
@@ -2046,6 +2147,25 @@ def _parse_iso_datetime(value: Optional[str]) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _strip_url_query(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        return urlunparse(parsed._replace(query="", fragment=""))
+    except Exception:
+        return url.split("?")[0]
+
+
+async def _load_recent_user_audio_urls(user_id: str, limit: int = 40) -> set[str]:
+    try:
+        docs = await db.songs.find({"user_id": user_id}, {"_id": 0, "audio_url": 1}).sort("created_at", -1).to_list(limit)
+        cleaned = {_strip_url_query(str(doc.get("audio_url", "")).strip()) for doc in docs if doc.get("audio_url")}
+        return {item for item in cleaned if item}
+    except Exception:
+        return set()
 
 @api_router.get("/songs/user/{user_id}")
 async def get_user_songs(user_id: str):
@@ -2457,7 +2577,7 @@ async def _run_video_generation_task(song_id: str, user_id: str):
                     }
                 )
                 return
-            video_url = _SAMPLE_VIDEO_URL
+            video_url = _make_unique_media_url(_SAMPLE_VIDEO_URL)
         await db.songs.update_one(
             {"id": song_id},
             {
@@ -2489,7 +2609,7 @@ async def _run_video_generation_task(song_id: str, user_id: str):
                     {"id": song_id},
                     {
                         "$set": {
-                            "video_url": _SAMPLE_VIDEO_URL,
+                            "video_url": _make_unique_media_url(_SAMPLE_VIDEO_URL),
                             "video_thumbnail": generate_video_thumbnail(song),
                             "video_status": "completed",
                             "generate_video": True,
@@ -2531,7 +2651,7 @@ async def generate_song_video(song_id: str, user_id: str, background_tasks: Back
                 detail="Real video generation is unavailable. Configure REPLICATE_API_TOKEN and provider access.",
             )
 
-        video_url = _SAMPLE_VIDEO_URL
+        video_url = _make_unique_media_url(_SAMPLE_VIDEO_URL)
         await db.songs.update_one(
             {"id": song_id},
             {
@@ -2597,7 +2717,7 @@ async def generate_album_videos(album_id: str, user_id: str, background_tasks: B
                         {"id": song["id"]},
                         {
                             "$set": {
-                                "video_url": _SAMPLE_VIDEO_URL,
+                                "video_url": _make_unique_media_url(_SAMPLE_VIDEO_URL),
                                 "video_thumbnail": video_thumbnail,
                                 "generate_video": True,
                                 "video_generated_at": datetime.now(timezone.utc).isoformat(),
