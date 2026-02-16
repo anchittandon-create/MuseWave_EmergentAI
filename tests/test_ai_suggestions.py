@@ -20,13 +20,14 @@ class TestAISuggestionQuality:
         print("✓ Testing suggestion prompt structure...")
         
         required_fields = {
-            "title": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "music_prompt": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "genres": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "lyrics": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "artist_inspiration": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "video_style": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
-            "vocal_languages": ["CRITICAL", "UNIQUENESS REQUIREMENT", "CREATIVITY RULES"],
+            "title": ["Field: title", "Return only the title"],
+            "music_prompt": ["Field: music_prompt", "Return only the prompt text"],
+            "genres": ["Field: genres", "Return only comma-separated genres"],
+            "lyrics": ["Field: lyrics", "Return only the concept text"],
+            "artist_inspiration": ["Field: artist_inspiration", "Return only comma-separated artist names"],
+            "video_style": ["Field: video_style", "Return only the visual direction text"],
+            "vocal_languages": ["Field: vocal_languages", "Return only comma-separated languages"],
+            "duration": ["Field: duration", "Return only duration"],
         }
         
         # Read backend/server.py to verify prompts
@@ -51,8 +52,9 @@ class TestAISuggestionQuality:
         
         # Check for uniqueness seed generation
         assert "generate_uniqueness_seed()" in content, "Uniqueness seed generation not found"
-        assert "Avoid repeating" in content, "Repetition avoidance not emphasized"
-        assert "COMPLETELY DIFFERENT" in content, "Diversity requirement not emphasized"
+        assert "_remember_suggestion" in content, "Suggestion dedupe memory not found"
+        assert "_score_suggestion_relevance" in content, "Relevance scoring not found"
+        assert "FIELD_TEMPERATURE" in content, "Field-specific temperature controls not found"
         
         print("✅ Uniqueness mechanisms properly implemented")
     
@@ -80,7 +82,7 @@ class TestAISuggestionQuality:
             content = f.read()
         
         # Check for visual indicator components
-        assert "AISuggestIndicator" in content, "AI indicator component not found"
+        assert "aiSuggestedFields" in content, "AI indicator state not found"
         assert "AI Selected" in content, "AI Selected badge not found"
         assert "to-purple-500" in content or "purple-500" in content, "Purple gradient styling not found"
         assert "to-pink-500" in content or "pink-500" in content, "Pink gradient styling not found"
@@ -175,7 +177,7 @@ class TestAISuggestionQuality:
         with open(backend_path, 'r') as f:
             backend_content = f.read()
         
-        assert '"lyrics": song_data.lyrics or ""' in backend_content, "Lyrics not stored in backend"
+        assert '"lyrics": lyrics,' in backend_content, "Lyrics not stored in backend"
         
         print("✅ Lyrics properly included in payload and storage")
     

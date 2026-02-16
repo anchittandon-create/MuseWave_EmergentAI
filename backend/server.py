@@ -541,7 +541,7 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     used_audio_urls.add(selected["url"])
     return selected["url"], selected["duration"], True, "curated_demo_library"
 
-def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate) -> float:
+def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate | dict) -> float:
     """Calculate accuracy percentage of selected audio against input parameters
     
     Factors:
@@ -555,13 +555,14 @@ def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate) -> flo
     # Genre matching (40%)
     # Check if selected audio category matches user's genres
     selected_category = get_genre_category([selected_audio.get("title", "")])
-    user_category = get_genre_category(song_data.genres)
+    user_genres = song_data.get("genres", []) if isinstance(song_data, dict) else song_data.genres
+    user_category = get_genre_category(user_genres)
     genre_match = 0.4 if selected_category == user_category else 0.2
     accuracy += genre_match
     
     # Duration match (30%)
     audio_duration = selected_audio.get("duration", 0)
-    user_duration = song_data.duration_seconds
+    user_duration = song_data.get("duration_seconds", 0) if isinstance(song_data, dict) else song_data.duration_seconds
     if user_duration > 0:
         duration_ratio = min(audio_duration, user_duration) / max(audio_duration, user_duration)
         accuracy += duration_ratio * 0.3
@@ -1746,13 +1747,7 @@ def _generate_video_via_replicate(song_data: dict) -> Optional[str]:
             REPLICATE_VIDEO_MODEL,
             input=input_params,
         )
-        if isinstance(output, str):
-            return output
-        if isinstance(output, (list, tuple)) and output:
-            return output[0] if isinstance(output[0], str) else str(output[0])
-        if hasattr(output, "url"):
-            return getattr(output, "url", None)
-        return None
+        return _extract_replicate_media_url(output)
     except Exception as e:
         logger.error(f"Replicate video generation failed: {e}")
         return None
@@ -1906,7 +1901,7 @@ async def _run_video_generation_task(song_id: str, user_id: str):
         if not song:
             return
         video_thumbnail = generate_video_thumbnail(song)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         video_url = await loop.run_in_executor(None, lambda: _generate_video_via_replicate(song))
         if not video_url:
             video_url = _SAMPLE_VIDEO_URL
