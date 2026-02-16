@@ -27,4 +27,5 @@ npm start
 ```
 
 Set `REACT_APP_BACKEND_URL` to your backend base URL.
+Use the host root (example: `https://your-backend-host.com`), not `/api`, `/dashboard`, or GitHub URLs.
 For deployment, configure this env var in Vercel project settings.

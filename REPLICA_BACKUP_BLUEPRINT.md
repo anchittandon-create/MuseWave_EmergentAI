@@ -18,7 +18,7 @@ This document is a full backup blueprint for recreating the app behavior and arc
 - Database: MongoDB
 - AI Suggestions + Lyrics: OpenAI API
 - Video Generation: Replicate API (optional)
-- Music Generation: Custom provider endpoint via `MUSICGEN_API_URL` (optional)
+- Music Generation: Real generation via either external provider (`MUSICGEN_API_URL`) or Replicate MusicGen (`REPLICATE_API_TOKEN`)
 - Fallback audio: Curated royalty-free library when no provider is configured
 
 ## 3. Project Structure
@@ -46,7 +46,8 @@ Use `.env` values:
 1. `MUSICGEN_API_URL`
 2. `MUSICGEN_API_KEY`
 3. `REPLICATE_API_TOKEN`
-4. `OPENAI_MODEL` (default: `gpt-4o-mini`)
+4. `REPLICATE_MUSIC_MODEL` (default: `meta/musicgen`)
+5. `OPENAI_MODEL` (default: `gpt-4o-mini`)
 
 ## 5. Data Models
 ### 5.1 User
@@ -160,9 +161,11 @@ Prefix: `/api`
 1. User completes single-form inputs.
 2. Backend generates title if empty.
 3. Backend generates lyrics if vocal languages are set and lyrics are empty.
-4. Backend tries real audio generation via `MUSICGEN_API_URL`.
-5. If provider is unavailable/fails, backend falls back to curated audio library (`is_demo=true`).
-6. Song is saved and returned to frontend.
+4. Backend tries real audio generation in this order:
+- `MUSICGEN_API_URL` external provider (if configured)
+- Replicate MusicGen via `REPLICATE_API_TOKEN` (if configured)
+- Curated fallback library (`is_demo=true`) if both unavailable/fail
+5. Song is saved and returned to frontend.
 
 ### 7.3 Album Flow (Per-Track Required)
 1. User selects album mode and track count.
@@ -172,7 +175,7 @@ Prefix: `/api`
 5. For each track:
 - Generate/fill title
 - Generate lyrics when missing and vocals are present
-- Generate audio via provider or fallback
+- Generate audio via provider/Replicate/fallback
 - Save song with `track_number`
 6. Album + all songs are returned.
 
@@ -244,8 +247,9 @@ Deploy separately (Railway/Render/Fly/VM/K8s):
 ## 11. Required Keys From You
 To avoid current AI errors and template fallback behavior, you should provide:
 1. `OPENAI_API_KEY` (required for suggestions + lyrics synthesis)
-2. `MUSICGEN_API_URL` + `MUSICGEN_API_KEY` (recommended for real track generation)
-3. `REPLICATE_API_TOKEN` (optional for real video generation)
+2. `MUSICGEN_API_URL` + `MUSICGEN_API_KEY` (optional, for your own music provider)
+3. `REPLICATE_API_TOKEN` (recommended for real video generation and Replicate-hosted music generation)
+4. Optional: `REPLICATE_MUSIC_MODEL` (default `meta/musicgen`)
 
 Without these, the system still works but uses fallback behavior for missing providers.
 

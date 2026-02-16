@@ -47,6 +47,7 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
 MUSICGEN_API_KEY = os.environ.get("MUSICGEN_API_KEY")
+REPLICATE_MUSIC_MODEL = os.environ.get("REPLICATE_MUSIC_MODEL", "meta/musicgen")
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -347,6 +348,91 @@ def _extract_audio_url(payload: dict) -> Optional[str]:
                     return nested
     return None
 
+def _extract_replicate_media_url(output) -> Optional[str]:
+    """Extract URL from common Replicate output shapes."""
+    if isinstance(output, str) and output.startswith(("http://", "https://")):
+        return output
+    if isinstance(output, (list, tuple)):
+        for item in output:
+            if isinstance(item, str) and item.startswith(("http://", "https://")):
+                return item
+            if hasattr(item, "url"):
+                url = getattr(item, "url", None)
+                if callable(url):
+                    try:
+                        maybe = url()
+                        if isinstance(maybe, str) and maybe.startswith(("http://", "https://")):
+                            return maybe
+                    except Exception:
+                        continue
+                elif isinstance(url, str) and url.startswith(("http://", "https://")):
+                    return url
+    if hasattr(output, "url"):
+        url = getattr(output, "url", None)
+        if callable(url):
+            try:
+                maybe = url()
+                if isinstance(maybe, str) and maybe.startswith(("http://", "https://")):
+                    return maybe
+            except Exception:
+                return None
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            return url
+    return None
+
+def _build_musicgen_prompt(song_payload: dict) -> str:
+    """Construct a detailed, music-focused prompt for generation providers."""
+    title = (song_payload.get("title") or "").strip()
+    prompt = (song_payload.get("music_prompt") or "").strip()
+    genres = [g for g in (song_payload.get("genres") or []) if g]
+    languages = [l for l in (song_payload.get("vocal_languages") or []) if l]
+    artist = (song_payload.get("artist_inspiration") or "").strip()
+    lyrics = (song_payload.get("lyrics") or "").strip()
+    parts = []
+    if title:
+        parts.append(f"Title: {title}")
+    if prompt:
+        parts.append(prompt)
+    if genres:
+        parts.append(f"Genres: {', '.join(genres[:5])}")
+    if languages and "Instrumental" not in languages:
+        parts.append(f"Vocals in: {', '.join(languages[:3])}")
+    if artist:
+        parts.append(f"Inspired by: {artist}")
+    if lyrics:
+        parts.append(f"Lyrics theme: {lyrics[:260]}")
+    return ". ".join(parts) if parts else "Create a high-quality, original instrumental music track."
+
+def _generate_music_via_replicate(song_payload: dict) -> Optional[str]:
+    """Generate music track via Replicate-hosted MusicGen model."""
+    if not REPLICATE_API_TOKEN:
+        return None
+    try:
+        import replicate
+        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+        duration = int(song_payload.get("duration_seconds") or 30)
+        duration = max(5, min(duration, 120))
+        prompt = _build_musicgen_prompt(song_payload)
+
+        # Different hosted MusicGen variants may expect different duration keys.
+        input_attempts = [
+            {"prompt": prompt, "duration": duration},
+            {"prompt": prompt, "duration_seconds": duration},
+            {"prompt": prompt},
+        ]
+        for params in input_attempts:
+            try:
+                output = replicate.run(REPLICATE_MUSIC_MODEL, input=params)
+                audio_url = _extract_replicate_media_url(output)
+                if audio_url:
+                    return audio_url
+            except Exception as e:
+                logger.warning("Replicate MusicGen attempt failed (%s): %s", params.keys(), e)
+        return None
+    except Exception as e:
+        logger.warning("Replicate MusicGen setup failed: %s", e)
+        return None
+
 def _remember_suggestion(field: str, suggestion: str) -> bool:
     """Returns True if suggestion is unique in recent memory for a field."""
     text = (suggestion or "").strip().lower()
@@ -363,7 +449,8 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     """
     Generate/obtain track audio.
     1) If MUSICGEN_API_URL is configured, call it for real generation.
-    2) Fallback to curated demo library if provider is unavailable or fails.
+    2) Else, if REPLICATE_API_TOKEN is configured, use Replicate MusicGen.
+    3) Fallback to curated demo library if provider is unavailable or fails.
     Returns: (audio_url, duration_seconds, is_demo, provider_name)
     """
     if used_audio_urls is None:
@@ -402,6 +489,12 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 logger.warning("Music provider response missing audio url: %s", str(data)[:300])
         except Exception as exc:
             logger.warning("Music provider exception: %s", exc)
+
+    if REPLICATE_API_TOKEN:
+        replicate_audio_url = await asyncio.to_thread(lambda: _generate_music_via_replicate(song_payload))
+        if replicate_audio_url:
+            duration = int(song_payload.get("duration_seconds") or 30)
+            return replicate_audio_url, duration, False, f"replicate:{REPLICATE_MUSIC_MODEL}"
 
     selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
     used_audio_urls.add(selected["url"])
@@ -1760,6 +1853,12 @@ async def root():
 
 @api_router.get("/health")
 async def api_health():
+    if MUSICGEN_API_URL:
+        music_generation_mode = "external_music_provider"
+    elif REPLICATE_API_TOKEN:
+        music_generation_mode = f"replicate:{REPLICATE_MUSIC_MODEL}"
+    else:
+        music_generation_mode = "fallback_curated_library"
     return {
         "status": "healthy",
         "version": "3.0",
@@ -1767,7 +1866,7 @@ async def api_health():
         "db_name": PRIMARY_DB_NAME,
         "legacy_db_name": LEGACY_DB_NAME if legacy_db else None,
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
-        "music_generation": "configured" if MUSICGEN_API_URL else "fallback_curated_library",
+        "music_generation": music_generation_mode,
         "video_generation": "configured" if REPLICATE_API_TOKEN else "fallback_sample_video",
         "features": ["ai_suggestions", "lyrics_synthesis", "album_per_track_inputs", "knowledge_bases"],
     }
