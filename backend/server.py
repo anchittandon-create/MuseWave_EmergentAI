@@ -30,6 +30,7 @@ import base64
 import requests
 from PIL import Image, ImageDraw
 import json
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -726,16 +727,96 @@ TITLE_BLACKLIST_TERMS = {
     "sanctuary", "altar", "hymn", "epitaph", "requiem", "catacomb", "seraph", "omen"
 }
 
+TITLE_GENERIC_TERMS = {
+    "song", "track", "music", "untitled", "demo", "test", "vibe"
+}
+
+PRODUCTION_KEYWORDS = {
+    "kick", "snare", "hihat", "bassline", "chord", "melody", "arp", "808", "synth",
+    "guitar", "piano", "strings", "pad", "pluck", "reverb", "delay", "sidechain",
+    "compression", "eq", "groove", "arrangement", "mix", "master", "drop", "build"
+}
+
+VIDEO_KEYWORDS = {
+    "camera", "lens", "lighting", "color", "grade", "motion", "cut", "shot",
+    "handheld", "tracking", "dolly", "frame", "cinematic", "scene", "edit"
+}
+
+FIELD_TEMPERATURE = {
+    "title": 0.65,
+    "music_prompt": 0.75,
+    "genres": 0.55,
+    "lyrics": 0.7,
+    "artist_inspiration": 0.55,
+    "video_style": 0.72,
+    "vocal_languages": 0.35,
+    "duration": 0.2,
+}
+
+def _tokenize_text(text: str) -> list[str]:
+    return [token for token in re.findall(r"[a-zA-Z0-9']+", (text or "").lower()) if len(token) > 2]
+
+def _split_list_like_text(text: str) -> list[str]:
+    if not text:
+        return []
+    parts = []
+    raw_parts = re.split(r"[\n,;/|]+", text)
+    for item in raw_parts:
+        cleaned = re.sub(r"^\s*\d+[\)\.\-:]*\s*", "", item).strip()
+        cleaned = cleaned.strip("\"'`")
+        if cleaned:
+            parts.append(cleaned)
+    unique = []
+    seen = set()
+    for p in parts:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+def _best_match_from_choices(value: str, choices: list[str]) -> Optional[str]:
+    token = (value or "").strip().lower()
+    if not token:
+        return None
+    lowered = {c.lower(): c for c in choices}
+    if token in lowered:
+        return lowered[token]
+
+    aliases = {
+        "mandarin": "Chinese (Mandarin)",
+        "cantonese": "Chinese (Cantonese)",
+        "brazilian portuguese": "Portuguese (Brazil)",
+        "latam spanish": "Spanish (Latin America)",
+        "quebec french": "French (Quebec)",
+        "lofi": "Lo-fi",
+        "lo fi": "Lo-fi",
+        "dnb": "Drum and Bass",
+        "hip hop": "Hip-Hop",
+        "rnb": "R&B",
+    }
+    if token in aliases and aliases[token].lower() in lowered:
+        return lowered[aliases[token].lower()]
+
+    for choice in choices:
+        c = choice.lower()
+        if token == c:
+            return choice
+        if token in c or c in token:
+            return choice
+    return None
+
 def build_field_system_prompt(field: str) -> str:
     """Provide stricter field-specific guidance for practical music creation."""
     common = (
         "You are an elite global music producer and A&R advisor. "
-        "Output must be directly usable for music creation, never stories."
+        "Return practical, production-ready outputs only. Never return stories."
     )
     field_specific = {
         "title": (
-            "Create relatable, market-friendly track titles that are memorable, modern, and search-friendly. "
-            "Avoid archaic, gothic, fantasy, or overly abstract words."
+            "Create relatable, market-friendly titles that are modern and memorable. "
+            "Avoid archaic words and fantasy-like naming."
         ),
         "music_prompt": (
             "Write concrete production direction with instrumentation, groove, arrangement, and mix notes."
@@ -761,6 +842,132 @@ def build_field_system_prompt(field: str) -> str:
     }
     return f"{common} {field_specific.get(field, '')}".strip()
 
+def _score_suggestion_relevance(field: str, suggestion: str, context: dict) -> int:
+    text = (suggestion or "").strip()
+    if not text:
+        return 0
+    lower = text.lower()
+    score = 0
+    context_tokens = set(_tokenize_text(" ".join([
+        context.get("music_prompt", ""),
+        " ".join(context.get("genres", []) if isinstance(context.get("genres"), list) else []),
+        context.get("artist_inspiration", ""),
+        context.get("lyrics", ""),
+    ])))
+
+    if field == "title":
+        words = _tokenize_text(text)
+        if 1 <= len(words) <= 5:
+            score += 35
+        if len(text) <= 40:
+            score += 15
+        if not any(w in TITLE_BLACKLIST_TERMS for w in words):
+            score += 20
+        if not any(w in TITLE_GENERIC_TERMS for w in words):
+            score += 10
+        if context_tokens and any(w in context_tokens for w in words):
+            score += 20
+        return min(score, 100)
+
+    if field == "music_prompt":
+        words = _tokenize_text(text)
+        if 18 <= len(words) <= 120:
+            score += 25
+        production_hits = sum(1 for kw in PRODUCTION_KEYWORDS if kw in lower)
+        score += min(production_hits * 8, 40)
+        if context.get("genres") and any(g.lower() in lower for g in context.get("genres", [])):
+            score += 20
+        if any(token in lower for token in ["verse", "chorus", "drop", "bridge", "intro", "outro"]):
+            score += 15
+        return min(score, 100)
+
+    if field == "genres":
+        items = _split_list_like_text(text)
+        known = get_all_genres()
+        if 2 <= len(items) <= 4:
+            score += 25
+        matched = sum(1 for item in items if _best_match_from_choices(item, known))
+        score += min(matched * 20, 60)
+        if context.get("genres"):
+            score += 15
+        return min(score, 100)
+
+    if field == "vocal_languages":
+        items = _split_list_like_text(text)
+        known_langs = LANGUAGE_KNOWLEDGE_BASE
+        if 1 <= len(items) <= 3:
+            score += 30
+        matched = sum(1 for item in items if _best_match_from_choices(item, known_langs))
+        score += min(matched * 22, 66)
+        return min(score, 100)
+
+    if field == "duration":
+        normalized = validate_duration_suggestion(text)
+        return 100 if normalized else 0
+
+    if field == "artist_inspiration":
+        items = _split_list_like_text(text)
+        if 2 <= len(items) <= 4:
+            score += 35
+        known_artists = get_all_artists()
+        artist_hits = sum(1 for item in items if _best_match_from_choices(item, known_artists))
+        score += min(artist_hits * 20, 60)
+        return min(score, 100)
+
+    if field == "video_style":
+        words = _tokenize_text(text)
+        if 14 <= len(words) <= 110:
+            score += 30
+        visual_hits = sum(1 for kw in VIDEO_KEYWORDS if kw in lower)
+        score += min(visual_hits * 8, 40)
+        if any(t in lower for t in ["color palette", "lighting", "camera movement", "framing"]):
+            score += 20
+        return min(score, 100)
+
+    if field == "lyrics":
+        words = _tokenize_text(text)
+        if 10 <= len(words) <= 120:
+            score += 35
+        if not any(flag in lower for flag in ["once upon a time", "dear reader", "the end"]):
+            score += 20
+        if context_tokens and any(w in context_tokens for w in words):
+            score += 25
+        if any(w in lower for w in ["verse", "chorus", "hook", "theme", "narrative", "emotion"]):
+            score += 20
+        return min(score, 100)
+
+    return 50
+
+def _fallback_suggestion(field: str, context: dict) -> str:
+    genres = context.get("genres", []) if isinstance(context.get("genres"), list) else []
+    prompt = (context.get("music_prompt") or "").strip()
+
+    if field == "title":
+        genre = genres[0] if genres else "Neon"
+        return f"{genre} Afterglow" if genre else "Midnight Pulse"
+    if field == "music_prompt":
+        genre = ", ".join(genres[:2]) if genres else "Pop, Electronic"
+        base_prompt = prompt[:180] if prompt else "A polished modern track"
+        return (
+            f"{base_prompt}. Build around {genre} with clear groove, melodic hook, dynamic chorus lift, "
+            "and clean low-end focused mix."
+        )
+    if field == "genres":
+        if genres:
+            return ", ".join(genres[:4])
+        return "Pop, Electronic"
+    if field == "vocal_languages":
+        return "English"
+    if field == "duration":
+        return "45s"
+    if field == "artist_inspiration":
+        return "The Weeknd, Dua Lipa, Tame Impala"
+    if field == "video_style":
+        return "Night-time urban performance with moving handheld camera, warm practical lights, and rhythmic jump cuts synced to the beat."
+    if field == "lyrics":
+        return "A focused emotional hook about resilience after chaos, with one clear image that repeats in the chorus."
+    return "Creative suggestion"
+
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
     """Generate diverse, production-ready, music-specific suggestions."""
     if not openai_client:
@@ -769,19 +976,11 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
             detail="OPENAI_API_KEY is missing. Configure it in backend .env for AI suggestions.",
         )
 
+    context = context or {}
     system_prompt = build_field_system_prompt(field)
-    temperature_map = {
-        "title": 0.82,
-        "music_prompt": 0.88,
-        "genres": 0.85,
-        "lyrics": 0.9,
-        "artist_inspiration": 0.84,
-        "video_style": 0.9,
-        "vocal_languages": 0.75,
-        "duration": 0.5,
-    }
+    candidates: list[tuple[int, str]] = []
 
-    for _ in range(4):
+    for _ in range(7):
         uniqueness_seed = generate_uniqueness_seed()
         prompt = build_suggestion_prompt(field, current_value, context, uniqueness_seed)
         try:
@@ -792,7 +991,7 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    temperature=temperature_map.get(field, 0.85),
+                    temperature=FIELD_TEMPERATURE.get(field, 0.65),
                     max_tokens=280,
                 )
             )
@@ -805,15 +1004,36 @@ async def generate_ai_suggestion(field: str, current_value: str, context: dict) 
                 suggestion = validate_duration_suggestion(suggestion)
             if suggestion and "\n\n" in suggestion:
                 suggestion = suggestion.split("\n\n")[0].strip()
-            if suggestion and _remember_suggestion(field, suggestion):
+            if not suggestion:
+                continue
+
+            relevance = _score_suggestion_relevance(field, suggestion, context)
+            if relevance >= 58:
+                candidates.append((relevance, suggestion))
+
+            if relevance >= 88 and _remember_suggestion(field, suggestion):
                 return suggestion
         except Exception as e:
             logger.error(f"AI suggestion error for {field}: {e}")
 
-    raise HTTPException(
-        status_code=502,
-        detail="AI suggestion failed after multiple attempts. Check OPENAI_API_KEY and model access.",
-    )
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _, candidate in candidates:
+            if _remember_suggestion(field, candidate):
+                return candidate
+        return candidates[0][1]
+
+    fallback = _fallback_suggestion(field, context)
+    if field in ["genres", "vocal_languages"]:
+        fallback = validate_list_suggestion(field, fallback)
+    if field == "duration":
+        fallback = validate_duration_suggestion(fallback)
+    if fallback and _remember_suggestion(field, fallback):
+        return fallback
+    if fallback:
+        return fallback
+
+    raise HTTPException(status_code=502, detail=f"AI suggestion failed for field '{field}'.")
 
 def validate_music_specific_suggestion(field: str, text: str) -> str:
     """Validate that suggestions are music-specific, not poetry or stories"""
@@ -867,6 +1087,8 @@ def validate_music_specific_suggestion(field: str, text: str) -> str:
             return ""
         if any(ch in text for ch in [":", ";", "/", "\\", "{", "}", "[", "]"]):
             return ""
+        if any(term in text_lower for term in TITLE_GENERIC_TERMS):
+            return ""
         if text_lower.startswith(("the ", "a ", "an ")):
             # Titles starting with articles are allowed, but avoid bland outputs like "The Sound".
             if len(words) <= 2:
@@ -896,7 +1118,6 @@ def validate_duration_suggestion(text: str) -> str:
         except ValueError:
             return ""
     else:
-        import re
         h = re.search(r"(\d+)\s*h", raw)
         m = re.search(r"(\d+)\s*m", raw)
         s = re.search(r"(\d+)\s*s", raw)
@@ -926,68 +1147,32 @@ def validate_list_suggestion(field: str, text: str) -> str:
     """Validate and clean list-based suggestions (genres, languages)"""
     if not text:
         return ""
-    
-    # Known valid genres
-    valid_genres = {
-        "electronic", "ambient", "techno", "house", "trance", "drum and bass",
-        "dnb", "dubstep", "future bass", "trap", "lo-fi", "lo-fi hip-hop",
-        "hip-hop", "rap", "pop", "indie", "indie pop", "rock", "alternative rock",
-        "metal", "death metal", "black metal", "progressive metal", "jazz",
-        "fusion jazz", "smooth jazz", "classical", "orchestral", "chamber",
-        "folk", "celtic", "world music", "afrobeat", "reggae", "dancehall",
-        "k-pop", "j-pop", "c-pop", "bollywood", "r&b", "soul", "funk", "disco",
-        "synthwave", "retrowave", "chillwave", "vaporwave", "psychedelic",
-        "experimental", "noise", "glitch", "post-rock", "math rock", "emo",
-        "punk", "emo punk", "pop punk", "grunge", "indie folk", "singer-songwriter",
-        "country", "bluegrass", "blues", "gospel", "spiritual", "ambient techno",
-        "deep house", "garage", "uk garage", "grime", "drill", "phonk",
-        "dark ambient", "industrial", "post-punk", "new wave", "synthpop",
-        "darkwave", "gothic", "ethereal wave", "hyperpop", "hyperpunk",
-        "microhouse", "clicks and cuts", "laptop", "glitchy", "modular",
-        "acid", "acid house", "acid jazz", "breakcore", "jungle", "liquid funk",
-        "liquid drum and bass", "neurofunk", "dark dnb", "hardstyle",
-        "hardcore", "happy hardcore", "gabber", "frenchcore", "industrial hardcore",
-        "psytrance", "psydub", "psychedelic trance", "goa trance", "minimal",
-        "minimal techno", "detroit techno", "berlin techno", "acid techno",
-        "tech house", "tech pop", "deep tech", "dub techno", "dub", "dubwise",
-        "roots reggae", "digital reggae", "drum and bass", "liquid bass",
-        "future garage", "bassline", "house music", "chicago house", "detroit house",
-        "melbourne bounce", "future bounce", "wonky", "wonky pop", "tribal",
-        "tribal techno", "world electronica", "plunderphonics", "musique concrète"
-    }
-    
-    # Known valid languages (use ISO 639-1 codes and names)
-    valid_languages = {
-        "english", "spanish", "french", "german", "italian", "portuguese",
-        "russian", "chinese", "japanese", "korean", "hindi", "arabic",
-        "turkish", "dutch", "polish", "swedish", "norwegian", "danish",
-        "finnish", "greek", "hebrew", "thai", "vietnamese", "tagalog",
-        "afrikaans", "bengali", "punjabi", "urdu", "farsi", "turkish",
-        "indonesian", "malay", "icelandic", "czech", "hungarian", "romanian",
-        "bulgarian", "croatian", "serbian", "slovak", "slovenian", "estonian",
-        "latvian", "lithuanian", "maltese", "basque", "catalan", "galician",
-        "welsh", "irish", "gaelic", "luxembourgish", "breton", "corsican",
-        "occitan", "provençal", "esperanto", "latin", "ancient greek",
-        "instrumental", "vocables", "singing", "chant", "yodeling",
-        "a cappella", "acapella"
-    }
-    
-    # Clean up the suggestion
+
     if field == "genres":
-        # Split by comma and validate
-        genres = [g.strip().lower() for g in text.split(",")]
-        genres = [g for g in genres if g in valid_genres or len(g) > 2]  # Allow unknown niche genres
-        return ", ".join(genres[:4]) if genres else ""
-    
-    elif field == "vocal_languages":
-        # Handle special cases
+        items = _split_list_like_text(text)
+        canonical = []
+        allowed_genres = get_all_genres()
+        for item in items:
+            match = _best_match_from_choices(item, allowed_genres)
+            if match and match not in canonical:
+                canonical.append(match)
+        if canonical:
+            return ", ".join(canonical[:4])
+        # Keep useful unknowns as fallback but normalize casing.
+        fallback = [item.strip().title() for item in items if len(item.strip()) > 2]
+        return ", ".join(fallback[:4]) if fallback else ""
+
+    if field == "vocal_languages":
         if "instrumental" in text.lower():
             return "Instrumental"
-        
-        languages = [l.strip().lower() for l in text.split(",")]
-        languages = [l for l in languages if l in valid_languages or len(l) > 2]
-        return ", ".join(languages[:3]) if languages else ""
-    
+        items = _split_list_like_text(text)
+        canonical = []
+        for item in items:
+            match = _best_match_from_choices(item, LANGUAGE_KNOWLEDGE_BASE)
+            if match and match not in canonical:
+                canonical.append(match)
+        return ", ".join(canonical[:3]) if canonical else ""
+
     return text
 
 async def generate_lyrics(music_prompt: str, genres: list, languages: list, title: str = "") -> str:
@@ -1031,228 +1216,117 @@ Requirements:
         return ""
 
 def build_suggestion_prompt(field: str, current_value: str, context: dict, seed: str) -> str:
-    context_parts = []
-    if context.get("music_prompt"):
-        context_parts.append(f"Music Description: {context['music_prompt']}")
-    if context.get("genres"):
-        context_parts.append(f"Genres: {', '.join(context['genres'])}")
-    if context.get("lyrics"):
-        context_parts.append(f"Lyrics/Theme: {context['lyrics'][:300]}")
-    if context.get("artist_inspiration"):
-        context_parts.append(f"Artist Inspiration: {context['artist_inspiration']}")
-    if context.get("duration_seconds"):
-        context_parts.append(f"Duration: {context['duration_seconds']}s")
-    
-    context_str = "\n".join(context_parts) if context_parts else "No context provided"
-    known_genres = ", ".join(get_all_genres()[:60])
-    known_languages = ", ".join(LANGUAGE_KNOWLEDGE_BASE[:60])
-    known_artists = ", ".join(get_all_artists()[:60])
-    
-    # Extract numeric seed components for varied suggestion styles
-    seed_hash = hash(seed) % 100
-    suggestion_style = ["avant-garde", "classical", "contemporary", "experimental", "fusion"][seed_hash % 5]
-    
-    prompts = {
-        "title": f"""CRITICAL: Create ONE strong, relatable, modern song/album title that fits this music and feels real for listeners.
-Context: {context_str}
-Current title: '{current_value}'
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each suggestion MUST be completely different from any previous suggestions
-- Avoid repeating themes, patterns, or word combinations
-- Use the suggestion style: {suggestion_style}
-
-Requirements:
-- Keep it 1-5 words, catchy, and easy to remember
-- Should feel playlist-ready and commercially believable
-- Match the mood and energy of the music
-- Avoid archaic/gothic/fantasy words (cathedral, citadel, abyss, oracle, etc.)
-- Avoid filler words like Song, Track, Music
-- Return ONLY the title text, no explanation""",
-
-        "music_prompt": f"""CRITICAL: Write a vivid, detailed, professional music production description that would guide a musician/producer.
-Context: {context_str}
-Current: '{current_value}'
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each description MUST use completely different production terminology
-- Avoid repeating the same sonic descriptors (warm, dark, bright, etc.)
-- Reference different production techniques and approaches each time
-- Use the approach: {suggestion_style}
-
-Requirements:
-- Describe the sonic landscape, mood, energy, and emotional arc in ORIGINAL ways
-- Be specific about instrumentation, production style, and technical execution
-- Reference specific production techniques (tape saturation, granular synthesis, spectral processing, convolution, modulation, time-stretching, etc.)
-- Describe texture, rhythm patterns, dynamics, spatial qualities, and frequency balance
-- Include unexpected sonic elements that elevate the composition
-- Specify emotional journey and listener experience
-- 2-4 sentences maximum, highly detailed
-- Return ONLY the description, no explanation
-
-CREATIVITY RULES:
-1. Avoid repetitive descriptors (warm, dark, lush, tight, punchy)
-2. Use technical and artistic language
-3. Create a unique production philosophy for this track
-4. Make it inspiring and specific for music creation""",
-
-        "genres": f"""CRITICAL: Suggest 2-4 precise music genres/sub-genres that perfectly fit this music - COMPLETELY DIFFERENT and UNIQUE each time.
-Context: {context_str}
-Known genres list (use these names when relevant): {known_genres}
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each suggestion MUST be completely fresh and unexpected
-- Avoid popular or obvious genre combinations
-- Mix genres in creative, non-obvious ways
-- Consider emerging, niche, and cross-cultural genres
-- Use the style: {suggestion_style}
-
-Requirements:
-- Mix mainstream genres with SPECIFIC, NICHE sub-genres and micro-genres
-- Be creative and original (avoid predictable combinations like "Synthwave + Retrowave")
-- Consider deep production style, emotional mood, and cultural context
-- Include experimental, emerging, or genre-bending possibilities
-- Look beyond surface-level categorization to deeper musical DNA
-- Consider production techniques, instrumentation, and regional influences
-- Format: Comma-separated genre names only
-- Could include emerging genres, fusion styles, or unexpected cultural blends
-- Return ONLY the genres, no explanation (e.g., "Ambient Techno, Micro House, Glitch Pop")
-
-CREATIVITY RULES:
-1. Avoid repeating any genres from previous suggestions
-2. Create surprising but logical genre combinations
-3. Include at least one unexpected or experimental genre
-4. Make listeners discover new genre territories""",
-
-        "lyrics": f"""CRITICAL: Create an evocative, completely UNIQUE lyrical theme, concept, or storytelling hook that captures the music's essence.
-Context: {context_str}
-Current: '{current_value}'
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each concept MUST be completely original and never repeated
-- Avoid common song themes (love, loss, dancing, partying)
-- Use unexpected narrative angles and perspectives
-- Reference diverse cultural, historical, or scientific inspiration
-- Use the approach: {suggestion_style}
-
-Requirements:
-- Create a memorable, conceptual theme (not full lyrics, but vivid enough to inspire songwriting)
-- Be poetic, mysterious, intriguing, thought-provoking, or philosophically engaging
-- Align deeply with the musical mood, genres, and production style
-- Could be metaphorical, abstract, narrative, emotional, or conceptual
-- Use unexpected imagery from diverse sources (science, nature, history, culture, psychology)
-- Could be a story fragment, perspective shift, or emotional state
-- 1-3 sentences of pure creative inspiration
-- Return ONLY the lyrical concept, no explanation
-
-CREATIVITY RULES:
-1. Avoid common song topics (love, heartbreak, dancing, freedom, night)
-2. Create unexpected narrative angles
-3. Use surprising metaphors and imagery
-4. Make it specific to this music's unique sonic identity""",
-
-        "artist_inspiration": f"""CRITICAL: Suggest 2-4 specific artist influences with detailed technical/stylistic reasoning - COMPLETELY UNIQUE each time.
-Context: {context_str}
-Known artists list (sample): {known_artists}
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each suggestion MUST reference completely different artists
-- Avoid repeating artists from previous suggestions
-- Mix legendary and emerging artists unpredictably
-- Reference artists from diverse genres, eras, and cultures
-- Use the approach: {suggestion_style}
-
-Requirements:
-- Reference a diverse mix of established legends, contemporary innovators, AND emerging/underground artists
-- Provide SPECIFIC technical or stylistic reasons for each artist choice
-- Consider production techniques, sound design philosophy, emotional intensity, cultural perspective, innovation
-- Include artists from different eras (classical, 20th century, 21st century), genres, and cultural backgrounds
-- Format: "Artist1 (production innovation/sound design explanation), Artist2 (different stylistic aspect)..."
-- Could include experimental artists, producers, sound designers, or culture icons
-- Be thoughtful, specific, and genuinely surprising
-- Return ONLY the suggestions, no explanation
-
-CREATIVITY RULES:
-1. Avoid repeating artists from previous suggestions
-2. Draw connections from unexpected angles (same era different culture, same technique different genre)
-3. Include at least one emerging or experimental artist
-4. Explain WHY each artist fits, not just that they do
-5. Reference specific works, techniques, or innovations from each artist""",
-
-        "video_style": f"""CRITICAL: Suggest a specific, cinematic, and completely UNIQUE visual style for a music video.
-Context: {context_str}
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each video concept MUST be completely original and different
-- Avoid repeating visual styles, color palettes, or filming techniques
-- Reference diverse cinematographic movements and visual artists
-- Create genuinely surprising visual directions
-- Use the aesthetic: {suggestion_style}
-
-Requirements:
-- Be VERY specific about color palettes, camera movements, editing pace, visual metaphors
-- Reference cinematographic styles, directors, films, visual art movements
-- Include mood, atmosphere, lighting design, emotional impact, and tone
-- Describe actual camera techniques (tracking shots, jump cuts, slow-motion, perspective shifts, unconventional framing)
-- Could reference art movements, fashion eras, visual artists, architecture, or cultural aesthetics
-- Include specific production design elements (sets, props, locations, textures, materials)
-- Describe the overall visual narrative or emotional journey
-- 3-4 sentences of vivid, specific visual storytelling
-- Return ONLY the visual description, no explanation
-
-CREATIVITY RULES:
-1. Avoid overused visual concepts (neon lights, silhouettes, abstract patterns)
-2. Reference diverse cinematographic traditions
-3. Create surprising visual directions that complement the music
-4. Be specific enough for a director to execute the vision""",
-
-        "vocal_languages": f"""CRITICAL: Suggest the most appropriate vocal language(s) for this music - COMPLETELY UNIQUE and ORIGINAL each time.
-Context: {context_str}
-Known language list (sample): {known_languages}
-Seed: {seed}
-
-UNIQUENESS REQUIREMENT:
-- Each suggestion MUST be completely fresh and unexpected
-- Avoid repeating language suggestions
-- Consider linguistic diversity and cultural authenticity
-- Use the approach: {suggestion_style}
-
-Requirements:
-- If music is clearly instrumental-focused or conceptually requires it, respond: "Instrumental"
-- If vocals are appropriate, choose specific language(s) matching the vibe and production style
-- Consider: cultural authenticity, phonetic beauty, linguistic rhythm, emotional connotations, pronunciation flow
-- Could suggest unexpected language choices for dramatic or conceptual effect
-- Could suggest multilingual approach, code-switching, or linguistic fusion
-- Consider regional dialects, tonal languages, constructed languages, or vocal textures
-- Think about linguistic origin, sound qualities, and cultural resonance
-- Be creative, specific, and culturally respectful
-- Return ONLY the language name(s), no explanation
-
-CREATIVITY RULES:
-1. Avoid repeating the same languages from previous suggestions
-2. Consider unexpected but authentic language choices
-3. Think about linguistic phonetics and how they complement the music
-4. Make culturally aware and respectful suggestions""",
-
-        "duration": f"""Suggest one practical music duration for this idea.
-Context: {context_str}
-Current value: '{current_value}'
-Seed: {seed}
-
-Requirements:
-- Return only duration string (examples: 30s, 45s, 1m20s, 2:30)
-- Keep it realistic for the described structure and genres
-- Prefer 20-180 seconds unless context clearly asks otherwise
-- No explanation text"""
+    context = context or {}
+    compact_context = {
+        "music_prompt": (context.get("music_prompt") or "")[:280],
+        "genres": context.get("genres", [])[:6] if isinstance(context.get("genres"), list) else [],
+        "lyrics": (context.get("lyrics") or "")[:180],
+        "artist_inspiration": (context.get("artist_inspiration") or "")[:180],
+        "album_context": (context.get("album_context") or "")[:140],
+        "track_number": context.get("track_number"),
     }
-    
-    return prompts.get(field, f"Generate a creative suggestion for {field}. Context: {context_str}")
+    context_json = json.dumps(compact_context, ensure_ascii=True)
+    allowed_genres = ", ".join(get_all_genres())
+    allowed_langs = ", ".join(LANGUAGE_KNOWLEDGE_BASE)
+    known_artists = ", ".join(get_all_artists())
+
+    prompts = {
+        "title": f"""Field: title
+Seed: {seed}
+Context JSON: {context_json}
+Current value: {current_value}
+Task: return ONE title that is catchy, modern, relatable, and commercially believable.
+Rules:
+- 1 to 5 words only
+- no archaic/fantasy words
+- no punctuation-heavy output
+- no explanation
+Return only the title.""",
+
+        "music_prompt": f"""Field: music_prompt
+Seed: {seed}
+Context JSON: {context_json}
+Current value: {current_value}
+Task: write one music production prompt.
+Rules:
+- 2 to 4 sentences
+- include instrumentation, groove, arrangement direction, and mixing cues
+- must be directly usable to generate a track
+- no explanation wrapper
+Return only the prompt text.""",
+
+        "genres": f"""Field: genres
+Seed: {seed}
+Context JSON: {context_json}
+Allowed genres (pick from this list): {allowed_genres}
+Task: choose 2 to 4 genres that best match the context.
+Rules:
+- comma-separated only
+- use names from allowed list
+- no explanation
+Return only comma-separated genres.""",
+
+        "vocal_languages": f"""Field: vocal_languages
+Seed: {seed}
+Context JSON: {context_json}
+Allowed languages (pick from this list): {allowed_langs}
+Task: choose 1 to 3 vocal language options, or Instrumental when no vocals are needed.
+Rules:
+- comma-separated only
+- use names from allowed list
+- no explanation
+Return only comma-separated languages.""",
+
+        "lyrics": f"""Field: lyrics
+Seed: {seed}
+Context JSON: {context_json}
+Current value: {current_value}
+Task: give one concise lyrical concept aligned with the context.
+Rules:
+- 1 to 3 sentences
+- clear emotional direction and hook idea
+- no storybook style
+- no explanation wrapper
+Return only the concept text.""",
+
+        "artist_inspiration": f"""Field: artist_inspiration
+Seed: {seed}
+Context JSON: {context_json}
+Known artists reference: {known_artists}
+Task: suggest 2 to 4 artist references that fit the context.
+Rules:
+- comma-separated names only
+- use globally known and musically relevant artists
+- no explanation
+Return only comma-separated artist names.""",
+
+        "video_style": f"""Field: video_style
+Seed: {seed}
+Context JSON: {context_json}
+Current value: {current_value}
+Task: write one executable music-video direction.
+Rules:
+- 2 to 3 sentences
+- include color/lighting, camera movement, and editing rhythm
+- directly tied to the song mood
+- no explanation wrapper
+Return only the visual direction text.""",
+
+        "duration": f"""Field: duration
+Seed: {seed}
+Context JSON: {context_json}
+Current value: {current_value}
+Task: suggest one practical duration.
+Rules:
+- return only one value like 30s, 45s, 1m20s, or 2:30
+- no explanation
+Return only duration.""",
+    }
+
+    return prompts.get(
+        field,
+        f"Field: {field}\nSeed: {seed}\nContext JSON: {context_json}\nReturn one practical, field-specific suggestion only.",
+    )
 
 # ==================== Auth Routes ====================
 
