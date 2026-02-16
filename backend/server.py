@@ -61,6 +61,7 @@ REPLICATE_MUSIC_MODEL_VERSION = os.environ.get("REPLICATE_MUSIC_MODEL_VERSION", 
 REPLICATE_MUSIC_OUTPUT_FORMAT = os.environ.get("REPLICATE_MUSIC_OUTPUT_FORMAT", "mp3")
 REPLICATE_MUSIC_NORMALIZATION_STRATEGY = os.environ.get("REPLICATE_MUSIC_NORMALIZATION_STRATEGY", "peak")
 REPLICATE_MUSIC_MAX_DURATION_SECONDS = int(os.environ.get("REPLICATE_MUSIC_MAX_DURATION_SECONDS", "30"))
+STRICT_REAL_MEDIA_OUTPUT = os.environ.get("STRICT_REAL_MEDIA_OUTPUT", "false").lower() == "true"
 SUGGEST_MAX_ATTEMPTS = max(1, min(int(os.environ.get("SUGGEST_MAX_ATTEMPTS", "3")), 6))
 SUGGEST_OPENAI_TIMEOUT_SECONDS = max(
     2.0, min(float(os.environ.get("SUGGEST_OPENAI_TIMEOUT_SECONDS", "8")), 30.0)
@@ -597,6 +598,12 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
             requested_duration = int(song_payload.get("duration_seconds") or 30)
             duration = max(5, min(requested_duration, REPLICATE_MUSIC_MAX_DURATION_SECONDS))
             return replicate_audio_url, duration, False, f"replicate:{REPLICATE_MUSIC_MODEL}"
+
+    if STRICT_REAL_MEDIA_OUTPUT:
+        raise HTTPException(
+            status_code=502,
+            detail="Real music generation failed. Configure provider keys/quota for MUSICGEN or Replicate.",
+        )
 
     selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls)
     used_audio_urls.add(selected["url"])
@@ -2219,6 +2226,18 @@ async def _run_video_generation_task(song_id: str, user_id: str):
         loop = asyncio.get_running_loop()
         video_url = await loop.run_in_executor(None, lambda: _generate_video_via_replicate(song))
         if not video_url:
+            if STRICT_REAL_MEDIA_OUTPUT:
+                await db.songs.update_one(
+                    {"id": song_id},
+                    {
+                        "$set": {
+                            "video_status": "failed",
+                            "video_thumbnail": video_thumbnail,
+                            "video_error": "Real video generation failed",
+                        }
+                    }
+                )
+                return
             video_url = _SAMPLE_VIDEO_URL
         await db.songs.update_one(
             {"id": song_id},
@@ -2235,6 +2254,15 @@ async def _run_video_generation_task(song_id: str, user_id: str):
         logger.info(f"Video generated for song {song_id}")
     except Exception as e:
         logger.error(f"Background video generation failed for {song_id}: {e}")
+        if STRICT_REAL_MEDIA_OUTPUT:
+            try:
+                await db.songs.update_one(
+                    {"id": song_id},
+                    {"$set": {"video_status": "failed", "video_error": str(e)}}
+                )
+            except Exception:
+                pass
+            return
         try:
             song = await db.songs.find_one({"id": song_id, "user_id": user_id})
             if song:
@@ -2277,6 +2305,12 @@ async def generate_song_video(song_id: str, user_id: str, background_tasks: Back
                 "video_thumbnail": video_thumbnail,
                 "message": "AI video generation started. This may take 1-2 minutes. Refresh the page to see your video.",
             }
+
+        if STRICT_REAL_MEDIA_OUTPUT:
+            raise HTTPException(
+                status_code=502,
+                detail="Real video generation is unavailable. Configure REPLICATE_API_TOKEN and provider access.",
+            )
 
         video_url = _SAMPLE_VIDEO_URL
         await db.songs.update_one(
@@ -2400,7 +2434,7 @@ async def api_health():
     elif REPLICATE_API_TOKEN:
         music_generation_mode = f"replicate:{REPLICATE_MUSIC_MODEL}"
     else:
-        music_generation_mode = "fallback_curated_library"
+        music_generation_mode = "unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_curated_library"
     return {
         "status": "healthy",
         "version": "3.0",
@@ -2410,7 +2444,8 @@ async def api_health():
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": music_generation_mode,
         "music_generation_model": REPLICATE_MUSIC_MODEL if REPLICATE_API_TOKEN else None,
-        "video_generation": "configured" if REPLICATE_API_TOKEN else "fallback_sample_video",
+        "video_generation": "configured" if REPLICATE_API_TOKEN else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
+        "strict_real_media_output": STRICT_REAL_MEDIA_OUTPUT,
         "features": ["ai_suggestions", "lyrics_synthesis", "album_per_track_inputs", "knowledge_bases"],
     }
 
