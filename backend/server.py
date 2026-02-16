@@ -940,7 +940,10 @@ def _score_suggestion_relevance(field: str, suggestion: str, context: dict) -> i
     return 50
 
 def _fallback_suggestion(field: str, context: dict) -> str:
-    seed_source = f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}"
+    seed_source = (
+        f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|"
+        f"{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}"
+    )
     seed_val = int(hashlib.sha256(seed_source.encode()).hexdigest(), 16)
 
     def pick(values: list[str], offset: int = 0) -> str:
@@ -948,55 +951,101 @@ def _fallback_suggestion(field: str, context: dict) -> str:
             return ""
         return values[(seed_val + offset) % len(values)]
 
+    def pick_unique(candidates: list[str], field_name: str = field) -> str:
+        cleaned = []
+        seen = set()
+        for item in candidates:
+            text = (item or "").strip()
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            cleaned.append(text)
+            seen.add(key)
+        if not cleaned:
+            return ""
+        recent = set(RECENT_SUGGESTIONS.get(field_name, []))
+        start = seed_val % len(cleaned)
+        for i in range(len(cleaned)):
+            candidate = cleaned[(start + i) % len(cleaned)]
+            if candidate.lower() not in recent:
+                return candidate
+        return cleaned[start]
+
     genres = context.get("genres", []) if isinstance(context.get("genres"), list) else []
     prompt = (context.get("music_prompt") or "").strip()
 
     if field == "title":
-        title_a = [
-            "Midnight", "Neon", "Afterdark", "Echo", "Velvet", "Pulse", "Aurora", "Signal", "Static", "Silver"
-        ]
-        title_b = [
-            "Drive", "Afterglow", "Voltage", "Reflex", "Horizon", "Frequency", "Momentum", "Skyline", "Rush", "Drift"
-        ]
+        title_a = ["Midnight", "Neon", "Afterdark", "Echo", "Velvet", "Pulse", "Aurora", "Signal", "Static", "Silver"]
+        title_b = ["Drive", "Afterglow", "Voltage", "Reflex", "Horizon", "Frequency", "Momentum", "Skyline", "Rush", "Drift"]
         genre = genres[0] if genres else ""
-        core = f"{pick(title_a)} {pick(title_b, 3)}".strip()
-        return f"{genre} {core}".strip() if genre else core
+        cores = [f"{a} {b}" for a in title_a for b in title_b]
+        options = [f"{genre} {core}".strip() for core in cores] if genre else cores
+        return pick_unique(options)
+
     if field == "music_prompt":
         genre = ", ".join(genres[:2]) if genres else pick(["Pop, Electronic", "Electronic, Ambient", "R&B, Pop"])
-        bass_style = pick(["deep sub bass", "rubbery synth bass", "clean punchy low-end", "warm analog bass"], 2)
-        drum_style = pick(["tight kick-snare groove", "syncopated drum pattern", "driving four-on-the-floor drums", "crisp broken-beat drums"], 5)
-        top_style = pick(["airy vocal hook", "glassy lead motif", "plucked synth melody", "guitar-texture counterline"], 7)
-        mix_style = pick(["wide chorus lift", "focused mono-compatible low-end", "controlled transient punch", "clean vocal-forward balance"], 11)
+        bass_opts = ["deep sub bass", "rubbery synth bass", "clean punchy low-end", "warm analog bass"]
+        drum_opts = ["tight kick-snare groove", "syncopated drum pattern", "driving four-on-the-floor drums", "crisp broken-beat drums"]
+        top_opts = ["airy vocal hook", "glassy lead motif", "plucked synth melody", "guitar-texture counterline"]
+        mix_opts = ["wide chorus lift", "focused mono-compatible low-end", "controlled transient punch", "clean vocal-forward balance"]
         base_prompt = prompt[:180] if prompt else "A polished modern track concept"
-        return (
-            f"{base_prompt}. Build around {genre} with {drum_style}, {bass_style}, and {top_style}. "
-            f"Arrange with tension in the verse and a strong chorus payoff, keeping a {mix_style}."
-        )
+        options = []
+        for i in range(8):
+            options.append(
+                f"{base_prompt}. Build around {genre} with {pick(drum_opts, i)}, {pick(bass_opts, i + 2)}, and {pick(top_opts, i + 4)}. "
+                f"Arrange with tension in the verse and a strong chorus payoff, keeping a {pick(mix_opts, i + 6)}."
+            )
+        return pick_unique(options)
+
     if field == "genres":
+        all_genres = get_all_genres()
         if genres:
-            pool = list(dict.fromkeys(genres + [pick(get_all_genres(), 13), pick(get_all_genres(), 29)]))
-            return ", ".join(pool[:4])
-        return ", ".join([pick(get_all_genres(), 3), pick(get_all_genres(), 17)])
+            options = []
+            for i in range(6):
+                pool = list(dict.fromkeys(genres + [pick(all_genres, i + 13), pick(all_genres, i + 29)]))
+                options.append(", ".join(pool[:4]))
+            return pick_unique(options)
+        options = []
+        for i in range(10):
+            options.append(", ".join([pick(all_genres, i + 3), pick(all_genres, i + 17)]))
+        return pick_unique(options)
+
     if field == "vocal_languages":
         lang_pool = [l for l in LANGUAGE_KNOWLEDGE_BASE if l != "Instrumental"]
-        return pick(lang_pool, 19)
+        return pick_unique(lang_pool)
+
     if field == "duration":
-        return pick(["30s", "38s", "45s", "52s", "1m10s", "1m24s"], 23)
+        return pick_unique(["30s", "38s", "45s", "52s", "1m10s", "1m24s", "1m36s", "2m00s"])
+
     if field == "artist_inspiration":
         artists = get_all_artists()
-        a1 = pick(artists, 5)
-        a2 = pick(artists, 21)
-        a3 = pick(artists, 37)
-        return ", ".join([a1, a2, a3])
+        options = []
+        for i in range(10):
+            options.append(", ".join([pick(artists, i + 5), pick(artists, i + 21), pick(artists, i + 37)]))
+        return pick_unique(options)
+
     if field == "video_style":
-        color = pick(["neon teal + amber", "deep blue + magenta", "warm tungsten + red practicals", "silver monochrome"], 31)
-        camera = pick(["handheld push-ins", "slow tracking wides", "shoulder-level follow shots", "low-angle glide shots"], 41)
-        edit = pick(["rhythmic jump cuts", "long takes with beat-matched transitions", "strobe-accented cut points", "cross-dissolves on downbeats"], 47)
-        return f"Use {color} palette with {camera}. Keep lighting cinematic and motion-driven, then finish with {edit} aligned to the drum accents."
+        color_opts = ["neon teal + amber", "deep blue + magenta", "warm tungsten + red practicals", "silver monochrome"]
+        camera_opts = ["handheld push-ins", "slow tracking wides", "shoulder-level follow shots", "low-angle glide shots"]
+        edit_opts = ["rhythmic jump cuts", "long takes with beat-matched transitions", "strobe-accented cut points", "cross-dissolves on downbeats"]
+        options = []
+        for i in range(8):
+            options.append(
+                f"Use {pick(color_opts, i + 31)} palette with {pick(camera_opts, i + 41)}. "
+                f"Keep lighting cinematic and motion-driven, then finish with {pick(edit_opts, i + 47)} aligned to the drum accents."
+            )
+        return pick_unique(options)
+
     if field == "lyrics":
-        image = pick(["city lights in rain", "empty freeway at 2AM", "flickering hallway neon", "late-night window reflections"], 53)
-        arc = pick(["rebuild confidence", "escape emotional noise", "push through pressure", "choose clarity over chaos"], 59)
-        return f"A focused hook about how to {arc}, using {image} as the repeating chorus image."
+        image_opts = ["city lights in rain", "empty freeway at 2AM", "flickering hallway neon", "late-night window reflections"]
+        arc_opts = ["rebuild confidence", "escape emotional noise", "push through pressure", "choose clarity over chaos"]
+        options = []
+        for i in range(8):
+            options.append(
+                f"A focused hook about how to {pick(arc_opts, i + 59)}, using {pick(image_opts, i + 53)} as the repeating chorus image."
+            )
+        return pick_unique(options)
+
     return "Creative suggestion"
 
 async def generate_ai_suggestion(field: str, current_value: str, context: dict) -> str:
