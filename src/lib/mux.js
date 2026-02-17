@@ -117,7 +117,6 @@ export async function muxAudioAndVideo({ audioBuffer, videoBuffer, duration }) {
       "aac",
       "-b:a",
       "192k",
-      "-shortest",
       "-movflags",
       "+faststart",
       outputPath,
