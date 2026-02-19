@@ -555,6 +555,7 @@ def _build_musicgen_prompt(song_payload: dict) -> str:
     languages = [l for l in (song_payload.get("vocal_languages") or []) if l]
     artist = (song_payload.get("artist_inspiration") or "").strip()
     lyrics = (song_payload.get("lyrics") or "").strip()
+    entropy_seed = str(song_payload.get("entropy_seed") or _entropy_seed())
     parts = []
     if title:
         parts.append(f"Title: {title}")
@@ -568,7 +569,10 @@ def _build_musicgen_prompt(song_payload: dict) -> str:
         parts.append(f"Inspired by: {artist}")
     if lyrics:
         parts.append(f"Lyrics theme: {lyrics[:260]}")
-    return ". ".join(parts) if parts else "Create a high-quality, original instrumental music track."
+    parts.append(f"Creative variation seed: {entropy_seed}")
+    parts.append(f"Musical variation timestamp: {int(time.time() * 1000)}")
+    parts.append(f"Randomization factor: {random.random()}")
+    return ". ".join(parts)
 
 def _generate_music_via_replicate(song_payload: dict) -> tuple[Optional[str], Optional[str]]:
     """Generate music track via Replicate-hosted MusicGen model."""
@@ -751,7 +755,11 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 )
             )
             if response.status_code >= 400:
-                provider_failures.append(f"Self-host MusicGen HTTP {response.status_code}")
+                detail = (response.text or "").strip().replace("\n", " ")[:180]
+                provider_failures.append(
+                    f"Self-host MusicGen HTTP {response.status_code}"
+                    + (f" ({detail})" if detail else "")
+                )
                 logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
             else:
                 content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
@@ -1337,148 +1345,312 @@ def _fallback_suggestion(
 
     return ""
 
+def _entropy_seed() -> str:
+    return (
+        f"{uuid.uuid4()}-{int(time.time() * 1000)}-{time.perf_counter_ns()}-"
+        f"{os.urandom(32).hex()}-{random.random()}"
+    )
+
+
+def _entropy_int(seed: str, label: str, modulo: int) -> int:
+    if modulo <= 0:
+        return 0
+    raw = hashlib.sha256(f"{seed}|{label}".encode("utf-8")).hexdigest()
+    return int(raw, 16) % modulo
+
+
+def _safe_json_dict(text: str) -> dict:
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(text[start:end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return {}
+    return {}
+
+
+def _coerce_music_context(raw: dict, incoming: dict, entropy_seed: str) -> dict:
+    base = raw.get("musicContext") if isinstance(raw.get("musicContext"), dict) else raw
+    ctx = dict(base) if isinstance(base, dict) else {}
+
+    emotion_space = [
+        "cosmic", "melancholic", "euphoric", "dark", "transcendent",
+        "aggressive", "serene", "chaotic", "hypnotic", "nostalgic",
+    ]
+    energy_space = ["low", "gradual rise", "pulsing", "explosive", "cyclical", "unpredictable"]
+    tempo_base_map = {
+        "cosmic": 96, "melancholic": 84, "euphoric": 124, "dark": 102, "transcendent": 110,
+        "aggressive": 136, "serene": 76, "chaotic": 142, "hypnotic": 118, "nostalgic": 92,
+    }
+
+    genres_space = get_all_genres() or ["Electronic", "Pop", "Cinematic"]
+    artists_space = get_all_artists() or ["A. R. Rahman", "Daft Punk", "The Weeknd"]
+
+    emotion = str(ctx.get("emotionalProfile") or "").strip() or emotion_space[_entropy_int(entropy_seed, "emotion", len(emotion_space))]
+    energy = str(ctx.get("energyProfile") or "").strip() or energy_space[_entropy_int(entropy_seed, f"energy:{emotion}", len(energy_space))]
+    tempo_variation = _entropy_int(entropy_seed, f"tempo:{emotion}:{energy}", 60)
+    tempo_bpm = int(ctx.get("tempoProfile") or 0)
+    if tempo_bpm <= 0:
+        tempo_bpm = max(1, min(72000, tempo_base_map.get(emotion, 100) + tempo_variation))
+
+    incoming_genres = incoming.get("genres") if isinstance(incoming.get("genres"), list) else []
+    primary = incoming_genres[0] if incoming_genres else genres_space[_entropy_int(entropy_seed, "genre:primary", len(genres_space))]
+    secondary = incoming_genres[1] if len(incoming_genres) > 1 else genres_space[_entropy_int(entropy_seed, "genre:secondary", len(genres_space))]
+    if secondary == primary and len(genres_space) > 1:
+        secondary = genres_space[(_entropy_int(entropy_seed, "genre:secondary:offset", len(genres_space) - 1) + 1) % len(genres_space)]
+    fusion_idx = _entropy_int(entropy_seed, "genre:fusion", len(genres_space))
+    fusion_genre = genres_space[fusion_idx]
+    if fusion_genre in [primary, secondary] and len(genres_space) > 2:
+        fusion_genre = genres_space[(fusion_idx + 2) % len(genres_space)]
+
+    genres_obj = ctx.get("genres")
+    if not isinstance(genres_obj, dict):
+        genres_obj = {}
+    genres_obj = {
+        "primaryGenre": str(genres_obj.get("primaryGenre") or primary),
+        "secondaryGenre": str(genres_obj.get("secondaryGenre") or secondary),
+        "fusionGenre": str(genres_obj.get("fusionGenre") or fusion_genre),
+    }
+
+    track_name = str(ctx.get("trackName") or incoming.get("title") or "").strip()
+    if not track_name:
+        track_name = f"{emotion.title()} {genres_obj['primaryGenre']} {entropy_seed[:6].upper()}"
+    album_name = str(ctx.get("albumName") or incoming.get("album_context") or "").strip()
+    if not album_name:
+        album_name = f"{track_name} Collection"
+
+    duration_raw = ctx.get("durationProfile")
+    duration_seconds = None
+    if isinstance(duration_raw, (int, float)):
+        duration_seconds = int(duration_raw)
+    elif isinstance(duration_raw, str):
+        duration_seconds = _duration_text_to_seconds(duration_raw)
+    if not duration_seconds:
+        base_duration = 120 if energy in ["low", "gradual rise"] else 180
+        duration_seconds = max(1, min(72000, base_duration + _entropy_int(entropy_seed, "duration", 300)))
+
+    if not str(ctx.get("artistInspiration") or "").strip():
+        a1 = artists_space[_entropy_int(entropy_seed, "artist:1", len(artists_space))]
+        a2 = artists_space[_entropy_int(entropy_seed, "artist:2", len(artists_space))]
+        if a2 == a1 and len(artists_space) > 1:
+            a2 = artists_space[(_entropy_int(entropy_seed, "artist:2:offset", len(artists_space) - 1) + 1) % len(artists_space)]
+        ctx["artistInspiration"] = f"{a1}, {a2}"
+
+    if not str(ctx.get("vocalProfile") or "").strip():
+        incoming_languages = incoming.get("vocal_languages") if isinstance(incoming.get("vocal_languages"), list) else []
+        if incoming_languages:
+            if "Instrumental" in incoming_languages:
+                ctx["vocalProfile"] = "Instrumental"
+            else:
+                ctx["vocalProfile"] = ", ".join(incoming_languages[:3])
+        else:
+            ctx["vocalProfile"] = "Instrumental" if _entropy_int(entropy_seed, "vocal", 4) == 0 else "English vocals"
+
+    if not str(ctx.get("lyricsTheme") or "").strip():
+        if "instrumental" in str(ctx.get("vocalProfile") or "").lower():
+            ctx["lyricsTheme"] = None
+        else:
+            ctx["lyricsTheme"] = f"A {emotion} narrative anchored to the symbol '{track_name}'."
+
+    if not str(ctx.get("instrumentationProfile") or "").strip():
+        ctx["instrumentationProfile"] = (
+            f"{genres_obj['primaryGenre']} and {genres_obj['secondaryGenre']} textures, "
+            f"tempo-focused layers near {tempo_bpm} BPM, and entropy-derived timbral variation seed {entropy_seed[:10]}."
+        )
+
+    if not str(ctx.get("musicDescription") or "").strip():
+        incoming_prompt = str(incoming.get("music_prompt") or "").strip()
+        core = incoming_prompt if incoming_prompt else f"{emotion} {energy} progression with evolving spatial depth."
+        ctx["musicDescription"] = (
+            f"{core} Emotional profile: {emotion}. Energy profile: {energy}. "
+            f"Tempo profile: {tempo_bpm} BPM. Instrumentation profile: {ctx['instrumentationProfile']}."
+        )
+
+    if not str(ctx.get("visualProfile") or "").strip():
+        ctx["visualProfile"] = (
+            f"Visual environment derived from {emotion} and {genres_obj['fusionGenre']}, "
+            f"with motion intensity matching {energy} dynamics and camera rhythm synced near {tempo_bpm} BPM."
+        )
+
+    ctx["entropySeed"] = entropy_seed
+    ctx["trackName"] = track_name
+    ctx["albumName"] = album_name
+    ctx["genres"] = genres_obj
+    ctx["emotionalProfile"] = emotion
+    ctx["energyProfile"] = energy
+    ctx["tempoProfile"] = tempo_bpm
+    ctx["durationProfile"] = duration_seconds
+    return ctx
+
+
+async def _build_music_context(field: str, current_value: str, context: dict) -> dict:
+    if not openai_client:
+        raise HTTPException(status_code=503, detail="AI suggestion is unavailable. OPENAI_API_KEY is missing or invalid.")
+
+    entropy_seed = _entropy_seed()
+    compact_context = {
+        "field": field,
+        "current_value": current_value or "",
+        "title": context.get("title", ""),
+        "music_prompt": context.get("music_prompt", ""),
+        "genres": context.get("genres", []) if isinstance(context.get("genres"), list) else [],
+        "artist_inspiration": context.get("artist_inspiration", ""),
+        "lyrics": context.get("lyrics", ""),
+        "vocal_languages": context.get("vocal_languages", []) if isinstance(context.get("vocal_languages"), list) else [],
+        "video_style": context.get("video_style", ""),
+        "album_context": context.get("album_context", ""),
+        "track_number": context.get("track_number"),
+        "duration_seconds": context.get("duration_seconds"),
+    }
+
+    system_prompt = (
+        "You are MuseWave Autonomous Contextual Suggestion and Media Generation Intelligence. "
+        "Generate a single coherent musicContext JSON only. No markdown. No prose. "
+        "Every field must be context-linked and non-repeating. Never use cached/static outputs."
+    )
+    user_prompt = (
+        f"Entropy seed: {entropy_seed}\n"
+        "Generate musicContext with exact keys:\n"
+        "entropySeed, trackName, albumName, genres{primaryGenre,secondaryGenre,fusionGenre}, "
+        "musicDescription, emotionalProfile, tempoProfile, energyProfile, instrumentationProfile, "
+        "vocalProfile, lyricsTheme, visualProfile, artistInspiration, durationProfile.\n"
+        "Use this generation order exactly: emotionalProfile, energyProfile, tempoProfile, genres, "
+        "instrumentationProfile, musicDescription, artistInspiration, trackName, albumName, "
+        "vocalProfile, lyricsTheme, durationProfile, visualProfile.\n"
+        "durationProfile must be numeric seconds in range 1..72000.\n"
+        f"Input context JSON:\n{json.dumps(compact_context, ensure_ascii=True)}"
+    )
+
+    response = await asyncio.to_thread(
+        lambda: openai_client.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=1.0,
+            top_p=0.95,
+            frequency_penalty=0.7,
+            presence_penalty=0.8,
+            max_tokens=900,
+            timeout=max(SUGGEST_OPENAI_TIMEOUT_SECONDS, 10),
+        )
+    )
+    content = (response.choices[0].message.content or "").strip()
+    parsed = _safe_json_dict(content)
+    return _coerce_music_context(parsed, compact_context, entropy_seed)
+
+
+def _suggestion_from_music_context(field: str, music_context: dict) -> str:
+    genres_obj = music_context.get("genres", {}) if isinstance(music_context.get("genres"), dict) else {}
+
+    if field == "title":
+        return str(music_context.get("trackName") or "").strip()
+    if field == "music_prompt":
+        return str(music_context.get("musicDescription") or "").strip()
+    if field == "genres":
+        values = [
+            str(genres_obj.get("primaryGenre") or "").strip(),
+            str(genres_obj.get("secondaryGenre") or "").strip(),
+            str(genres_obj.get("fusionGenre") or "").strip(),
+        ]
+        unique = []
+        for value in values:
+            if value and value not in unique:
+                unique.append(value)
+        return ", ".join(unique[:4])
+    if field == "artist_inspiration":
+        return str(music_context.get("artistInspiration") or "").strip()
+    if field == "video_style":
+        return str(music_context.get("visualProfile") or "").strip()
+    if field == "lyrics":
+        lyrics_theme = music_context.get("lyricsTheme")
+        return "" if lyrics_theme is None else str(lyrics_theme).strip()
+    if field == "vocal_languages":
+        vocal_profile = str(music_context.get("vocalProfile") or "").strip()
+        if not vocal_profile:
+            return ""
+        if "instrumental" in vocal_profile.lower():
+            return "Instrumental"
+        return vocal_profile
+    if field == "duration":
+        duration_value = music_context.get("durationProfile")
+        if isinstance(duration_value, (int, float)):
+            return _seconds_to_duration_text(int(duration_value))
+        if isinstance(duration_value, str):
+            return validate_duration_suggestion(duration_value)
+        return ""
+    if field == "album_name":
+        return str(music_context.get("albumName") or "").strip()
+    if field in music_context:
+        return str(music_context.get(field) or "").strip()
+    return ""
+
+
 async def generate_ai_suggestion(
     field: str,
     current_value: str,
     context: dict,
     user_id: Optional[str] = None,
 ) -> str:
-    """Generate diverse, production-ready, music-specific suggestions."""
     context = context or {}
     scope_key = _build_suggestion_scope_key(field, context, user_id)
     seen_in_scope = await _load_recent_scope_suggestions(field, scope_key)
     suggestion_turn = await _next_scope_turn(field, scope_key)
 
-    if not openai_client:
-        fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
-        fallback = _strip_machine_suffixes(field, fallback)
-        if field in ["genres", "vocal_languages"]:
-            fallback = validate_list_suggestion(field, fallback)
-        if field == "duration":
-            fallback = validate_duration_suggestion(fallback)
-        finalized = await _finalize_unique_suggestion(
-            field=field,
-            suggestion=fallback,
-            context=context,
-            current_value=current_value,
-            seen_in_scope=seen_in_scope,
-            scope_key=scope_key,
-            user_id=user_id,
-            turn_hint=suggestion_turn,
-        )
-        if finalized:
-            return finalized
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing and fallback suggestion failed.")
-
-    system_prompt = build_field_system_prompt(field)
-    candidates: list[tuple[int, str]] = []
-
-    for _ in range(SUGGEST_MAX_ATTEMPTS):
-        uniqueness_seed = generate_uniqueness_seed()
-        prompt = build_suggestion_prompt(
-            field,
-            current_value,
-            context,
-            f"{uniqueness_seed}-turn{suggestion_turn}",
-            list(seen_in_scope)[:8],
-        )
+    last_error: Optional[str] = None
+    for attempt in range(max(2, SUGGEST_MAX_ATTEMPTS)):
         try:
-            response = await asyncio.to_thread(
-                lambda: openai_client.chat.completions.create(
-                    model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=FIELD_TEMPERATURE.get(field, 0.65),
-                    max_tokens=280,
-                    timeout=SUGGEST_OPENAI_TIMEOUT_SECONDS,
-                )
-            )
-            suggestion = _strip_machine_suffixes(field, (response.choices[0].message.content or "").strip())
+            music_context = await _build_music_context(field, current_value, context)
+            suggestion = _suggestion_from_music_context(field, music_context)
+            suggestion = _strip_machine_suffixes(field, suggestion)
+
             if field in ["music_prompt", "lyrics", "video_style", "title"]:
                 suggestion = validate_music_specific_suggestion(field, suggestion)
             if field in ["genres", "vocal_languages"]:
                 suggestion = validate_list_suggestion(field, suggestion)
             if field == "duration":
                 suggestion = validate_duration_suggestion(suggestion)
-            if suggestion and "\n\n" in suggestion:
-                suggestion = suggestion.split("\n\n")[0].strip()
+
             if not suggestion:
-                continue
-            if current_value and _normalize_suggestion_text(suggestion) == _normalize_suggestion_text(current_value):
-                continue
-            normalized = _normalize_suggestion_text(suggestion)
-            if normalized in seen_in_scope:
+                last_error = "Empty suggestion after validation"
                 continue
 
-            relevance = _score_suggestion_relevance(field, suggestion, context)
-            if relevance >= 58:
-                candidates.append((relevance, suggestion))
-
-            if relevance >= 72:
-                finalized = await _finalize_unique_suggestion(
-                    field=field,
-                    suggestion=suggestion,
-                    context=context,
-                    current_value=current_value,
-                    seen_in_scope=seen_in_scope,
-                    scope_key=scope_key,
-                    user_id=user_id,
-                    turn_hint=suggestion_turn,
-                )
-                if finalized:
-                    return finalized
-        except Exception as e:
-            logger.error(f"AI suggestion error for {field}: {e}")
-            err_text = str(e).lower()
-            if (
-                "insufficient_quota" in err_text
-                or "invalid_api_key" in err_text
-                or "rate_limit" in err_text
-                or "timed out" in err_text
-            ):
-                break
-
-    if candidates:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        for idx, (_, candidate) in enumerate(candidates):
-            normalized = _normalize_suggestion_text(candidate)
-            if normalized in seen_in_scope:
-                continue
             finalized = await _finalize_unique_suggestion(
                 field=field,
-                suggestion=candidate,
-                context=context,
+                suggestion=suggestion,
+                context={**context, "music_context": music_context},
                 current_value=current_value,
                 seen_in_scope=seen_in_scope,
                 scope_key=scope_key,
                 user_id=user_id,
-                turn_hint=suggestion_turn + idx + 1,
+                turn_hint=suggestion_turn + attempt,
             )
             if finalized:
                 return finalized
+            last_error = "Suggestion duplicated with prior outputs"
+        except Exception as exc:
+            last_error = str(exc)
+            logger.error("AI contextual suggestion failure for %s: %s", field, exc)
+            err_text = last_error.lower()
+            if "insufficient_quota" in err_text or "invalid_api_key" in err_text or "rate_limit" in err_text:
+                break
 
-    fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
-    fallback = _strip_machine_suffixes(field, fallback)
-    if field in ["genres", "vocal_languages"]:
-        fallback = validate_list_suggestion(field, fallback)
-    if field == "duration":
-        fallback = validate_duration_suggestion(fallback)
-    finalized = await _finalize_unique_suggestion(
-        field=field,
-        suggestion=fallback,
-        context=context,
-        current_value=current_value,
-        seen_in_scope=seen_in_scope,
-        scope_key=scope_key,
-        user_id=user_id,
-        turn_hint=suggestion_turn + 77,
-    )
-    if finalized:
-        return finalized
-
-    raise HTTPException(status_code=502, detail=f"AI suggestion failed for field '{field}'.")
+    detail = f"AI suggestion failed for field '{field}'."
+    if last_error:
+        detail = f"{detail} Upstream: {last_error[:240]}"
+    raise HTTPException(status_code=502, detail=detail)
 
 def validate_music_specific_suggestion(field: str, text: str) -> str:
     """Validate that suggestions are music-specific, not poetry or stories"""
@@ -1680,141 +1852,29 @@ def _enforce_unique_suggestion(
     seen_in_scope: set[str],
     turn_hint: int,
 ) -> str:
-    base = _strip_machine_suffixes(field, suggestion)
-    if not base:
+    candidate = _strip_machine_suffixes(field, suggestion)
+    if not candidate:
         return ""
 
-    context = context or {}
+    if field in ["genres", "vocal_languages"]:
+        candidate = validate_list_suggestion(field, candidate)
+    if field == "duration":
+        candidate = validate_duration_suggestion(candidate)
+    if field in ["music_prompt", "lyrics", "video_style", "title"]:
+        candidate = validate_music_specific_suggestion(field, candidate)
+    if not candidate:
+        return ""
+
+    normalized = _normalize_suggestion_text(candidate)
+    current_norm = _normalize_suggestion_text(current_value or "")
     seen = {(_normalize_suggestion_text(x)) for x in seen_in_scope if x}
     seen.update({(_normalize_suggestion_text(x)) for x in RECENT_SUGGESTIONS.get(field, []) if x})
-    current_norm = _normalize_suggestion_text(current_value or "")
 
-    seed_material = (
-        f"{field}|{base}|{generate_uniqueness_seed()}|{turn_hint}|"
-        f"{datetime.now(timezone.utc).isoformat()}|{time.time_ns()}|{uuid.uuid4().hex}"
-    )
-    seed_val = int(hashlib.sha256(seed_material.encode()).hexdigest(), 16)
-
-    title_leads = [
-        "Neon", "Midnight", "Solar", "Velvet", "Echo", "Pulse",
-        "Nova", "Lunar", "Prism", "Ember", "Voltage", "Starlit"
-    ]
-    title_tails = [
-        "Mix", "Cut", "Drive", "Flow", "Signal", "Wave",
-        "Rush", "Shift", "Mode", "Edit", "Version", "Pass"
-    ]
-    text_cues = [
-        "emphasize groove movement in the chorus",
-        "tighten transient focus in the drum bus",
-        "shape vocal space with a short delay tail",
-        "add subtle syncopation in the supporting rhythm",
-        "increase dynamic lift entering the hook",
-        "lean into motif contrast between verse and chorus",
-        "focus low-end clarity with cleaner sidechain timing",
-        "expand stereo motion around melodic accents",
-    ]
-
-    def build_candidate(step: int) -> str:
-        if field == "title":
-            cleaned = re.sub(r"[^A-Za-z0-9'\-\s]", " ", base)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            words = cleaned.split()[:4]
-            stem = " ".join(words) if words else "Track"
-            lead = title_leads[(seed_val + step) % len(title_leads)]
-            tail = title_tails[(seed_val // 17 + step) % len(title_tails)]
-            candidate = f"{lead} {stem} {tail}".strip()
-            return candidate[:44].strip()
-
-        if field == "duration":
-            seconds = _duration_text_to_seconds(base) or 30
-            offset = ((seed_val + step * 37) % 19) - 9
-            if offset == 0:
-                offset = 3
-            return _seconds_to_duration_text(seconds + offset)
-
-        if field in ["genres", "vocal_languages"]:
-            choices = get_all_genres() if field == "genres" else LANGUAGE_KNOWLEDGE_BASE
-            parsed = _split_list_like_text(base)
-            canonical = []
-            for item in parsed:
-                match = _best_match_from_choices(item, choices)
-                if match and match not in canonical:
-                    canonical.append(match)
-            if not canonical and field == "genres":
-                for item in (context.get("genres") or []):
-                    match = _best_match_from_choices(item, choices)
-                    if match and match not in canonical:
-                        canonical.append(match)
-            if not canonical:
-                start = (seed_val + step) % len(choices)
-                take = 2 if field == "genres" else 1
-                canonical = [choices[(start + i) % len(choices)] for i in range(take)]
-            rotate = (seed_val + step) % len(canonical)
-            rotated = canonical[rotate:] + canonical[:rotate]
-            if field == "genres" and len(rotated) < 2:
-                extra = choices[(seed_val // 11 + step) % len(choices)]
-                if extra not in rotated:
-                    rotated.append(extra)
-            limit = 4 if field == "genres" else 3
-            return ", ".join(rotated[:limit])
-
-        if field == "artist_inspiration":
-            artists = get_all_artists()
-            parsed = _split_list_like_text(base)
-            canonical = []
-            for item in parsed:
-                match = _best_match_from_choices(item, artists)
-                if match and match not in canonical:
-                    canonical.append(match)
-            if not canonical:
-                start = (seed_val + step) % len(artists)
-                canonical = [artists[(start + i) % len(artists)] for i in range(3)]
-            rotate = (seed_val + step) % len(canonical)
-            rotated = canonical[rotate:] + canonical[:rotate]
-            if len(rotated) < 3:
-                extra = artists[(seed_val // 7 + step) % len(artists)]
-                if extra not in rotated:
-                    rotated.append(extra)
-            return ", ".join(rotated[:4])
-
-        if field in ["music_prompt", "video_style", "lyrics"]:
-            cue = text_cues[(seed_val + step) % len(text_cues)]
-            spacer = " " if base.endswith((".", "!", "?")) else ". "
-            return f"{base}{spacer}{cue.capitalize()}."
-
-        return base
-
-    for step in range(0, 30):
-        candidate = _strip_machine_suffixes(field, build_candidate(step))
-        if not candidate:
-            continue
-        if field in ["genres", "vocal_languages"]:
-            candidate = validate_list_suggestion(field, candidate)
-        if field == "duration":
-            candidate = validate_duration_suggestion(candidate)
-        if field in ["music_prompt", "lyrics", "video_style", "title"]:
-            validated = validate_music_specific_suggestion(field, candidate)
-            candidate = validated or candidate
-        if not candidate:
-            continue
-        normalized = _normalize_suggestion_text(candidate)
-        if current_norm and normalized == current_norm:
-            continue
-        if normalized in seen:
-            continue
-        return candidate
-
-    if field == "duration":
-        return _seconds_to_duration_text((_duration_text_to_seconds(base) or 30) + 3)
-    if field == "title":
-        suffixes = ["Version", "Rework", "Cut", "Session", "Edit"]
-        suffix = suffixes[seed_val % len(suffixes)]
-        return f"{base} {suffix}"[:44].strip()
-    if field in ["music_prompt", "video_style", "lyrics"]:
-        cue = text_cues[seed_val % len(text_cues)].capitalize()
-        spacer = " " if base.endswith((".", "!", "?")) else ". "
-        return f"{base}{spacer}{cue}."
-    return base
+    if current_norm and normalized == current_norm:
+        return ""
+    if normalized in seen:
+        return ""
+    return candidate
 
 
 async def _finalize_unique_suggestion(
@@ -2090,14 +2150,18 @@ async def create_song(song_data: SongCreate):
                 "music_prompt": song_data.music_prompt,
                 "genres": song_data.genres
             }, song_data.user_id)
-        except:
-            title = f"Track {uuid.uuid4().hex[:6].upper()}"
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"AI title suggestion failed: {str(exc)[:220]}")
     
     # Generate real track (if provider configured) or fallback to curated demo library.
     # Prime used URLs from recent user history to maximize uniqueness across requests.
     used_audio_urls = await _load_recent_user_audio_urls(song_data.user_id)
+    song_entropy_seed = _entropy_seed()
+    generation_payload = song_data.model_dump()
+    generation_payload["title"] = title
+    generation_payload["entropy_seed"] = song_entropy_seed
     audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
-        song_data.model_dump(),
+        generation_payload,
         used_audio_urls=used_audio_urls,
     )
     audio_data = {
@@ -2153,6 +2217,7 @@ async def create_song(song_data: SongCreate):
 
     song_doc = {
         "id": song_id,
+        "entropy": song_entropy_seed,
         "title": title,
         "music_prompt": song_data.music_prompt,
         "genres": song_data.genres,
@@ -2230,14 +2295,15 @@ async def create_album(album_data: AlbumCreate):
                 {"music_prompt": album_prompt, "genres": combined_genres},
                 album_data.user_id,
             )
-        except Exception:
-            title = f"Album {uuid.uuid4().hex[:6].upper()}"
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"AI album title suggestion failed: {str(exc)[:220]}")
 
     cover_art_url = select_cover_art(combined_genres)
     created_at = datetime.now(timezone.utc).isoformat()
 
     album_doc = {
         "id": album_id,
+        "entropy": _entropy_seed(),
         "title": title,
         "music_prompt": album_prompt,
         "genres": combined_genres,
@@ -2288,8 +2354,8 @@ async def create_album(album_data: AlbumCreate):
                     {"music_prompt": track_prompt, "genres": track_genres, "track_number": i + 1},
                     album_data.user_id,
                 )
-            except Exception:
-                track_title = f"{title} - Track {i + 1}"
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"AI track title suggestion failed: {str(exc)[:220]}")
 
         if not track_lyrics and track_languages and "Instrumental" not in track_languages:
             try:
@@ -2302,6 +2368,7 @@ async def create_album(album_data: AlbumCreate):
             except Exception as e:
                 logger.warning("Failed to generate lyrics for album track %s: %s", i + 1, e)
 
+        track_entropy_seed = _entropy_seed()
         audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
             {
                 "title": track_title,
@@ -2311,6 +2378,7 @@ async def create_album(album_data: AlbumCreate):
                 "vocal_languages": track_languages,
                 "duration_seconds": desired_duration,
                 "artist_inspiration": track_artist_inspiration,
+                "entropy_seed": track_entropy_seed,
             },
             used_audio_urls,
         )
@@ -2335,6 +2403,7 @@ async def create_album(album_data: AlbumCreate):
 
         song_doc = {
             "id": str(uuid.uuid4()),
+            "entropy": track_entropy_seed,
             "track_number": i + 1,
             "title": track_title,
             "music_prompt": track_prompt,
