@@ -83,8 +83,18 @@ logger = logging.getLogger(__name__)
 # Create the main app
 app = FastAPI(title="MuseWave API", description="AI Music Creation Platform")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# Create a router mounted at root; Vercel function path handling is normalized via middleware below.
+api_router = APIRouter(prefix="")
+
+
+@app.middleware("http")
+async def normalize_api_path_prefix(request, call_next):
+    path = request.scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        normalized = path[4:] or "/"
+        request.scope["path"] = normalized
+        request.scope["raw_path"] = normalized.encode("utf-8")
+    return await call_next(request)
 
 RECENT_SUGGESTIONS: dict[str, list[str]] = {}
 
@@ -674,9 +684,8 @@ async def _next_scope_turn(field: str, scope_key: str) -> int:
 async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str]:
     """
     Generate/obtain track audio.
-    1) If MUSICGEN_API_URL is configured, call it for real generation.
-    2) Else, if REPLICATE_API_TOKEN is configured, use Replicate MusicGen.
-    3) Fallback to curated demo library if provider is unavailable or fails.
+    1) If MUSICGEN_API_URL is configured, call self-hosted MusicGen for real generation.
+    2) Fallback to curated demo library only when strict mode is disabled.
     Returns: (audio_url, duration_seconds, is_demo, provider_name)
     """
     if used_audio_urls is None:
@@ -695,13 +704,15 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
             headers = {"Content-Type": "application/json"}
             if MUSICGEN_API_KEY:
                 headers["Authorization"] = f"Bearer {MUSICGEN_API_KEY}"
+            final_prompt = _build_musicgen_prompt(song_payload)
+            requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=30)
             provider_payload = {
                 "title": song_payload.get("title", ""),
-                "prompt": song_payload.get("music_prompt", ""),
+                "prompt": final_prompt,
                 "genres": song_payload.get("genres", []),
                 "lyrics": song_payload.get("lyrics", ""),
                 "vocal_languages": song_payload.get("vocal_languages", []),
-                "duration_seconds": song_payload.get("duration_seconds", 30),
+                "duration_seconds": requested_duration,
                 "artist_inspiration": song_payload.get("artist_inspiration", ""),
             }
             response = await asyncio.to_thread(
@@ -713,32 +724,21 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 )
             )
             if response.status_code >= 400:
-                provider_failures.append(f"MUSICGEN provider HTTP {response.status_code}")
+                provider_failures.append(f"Self-host MusicGen HTTP {response.status_code}")
                 logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
             else:
                 data = response.json() if response.content else {}
                 audio_url = _extract_audio_url(data if isinstance(data, dict) else {})
                 if audio_url:
-                    duration = int(data.get("duration_seconds") or song_payload.get("duration_seconds") or 30)
-                    return audio_url, duration, False, "external_music_provider"
-                provider_failures.append("MUSICGEN provider response missing audio URL")
+                    duration = int(data.get("duration_seconds") or requested_duration)
+                    return audio_url, duration, False, "self_host_musicgen"
+                provider_failures.append("Self-host MusicGen response missing audio URL")
                 logger.warning("Music provider response missing audio url: %s", str(data)[:300])
         except Exception as exc:
-            provider_failures.append(f"MUSICGEN provider exception: {type(exc).__name__}")
+            provider_failures.append(f"Self-host MusicGen exception: {type(exc).__name__}")
             logger.warning("Music provider exception: %s", exc)
-
-    if REPLICATE_API_TOKEN:
-        replicate_audio_url, replicate_error = await asyncio.to_thread(
-            lambda: _generate_music_via_replicate(song_payload)
-        )
-        if replicate_audio_url:
-            requested_duration = int(song_payload.get("duration_seconds") or 30)
-            duration = max(5, min(requested_duration, REPLICATE_MUSIC_MAX_DURATION_SECONDS))
-            return replicate_audio_url, duration, False, f"replicate:{REPLICATE_MUSIC_MODEL}"
-        if replicate_error:
-            provider_failures.append(f"Replicate: {replicate_error[:220]}")
     else:
-        provider_failures.append("Replicate token missing")
+        provider_failures.append("MUSICGEN_API_URL missing (self-host MusicGen endpoint not configured)")
 
     if STRICT_REAL_MEDIA_OUTPUT:
         provider_summary = "; ".join(provider_failures[:2]) if provider_failures else "No provider diagnostics available"
@@ -956,12 +956,12 @@ VIDEO_KEYWORDS = {
 }
 
 FIELD_TEMPERATURE = {
-    "title": 0.65,
-    "music_prompt": 0.75,
+    "title": 1.05,
+    "music_prompt": 0.95,
     "genres": 0.55,
-    "lyrics": 0.7,
+    "lyrics": 1.0,
     "artist_inspiration": 0.55,
-    "video_style": 0.72,
+    "video_style": 0.95,
     "vocal_languages": 0.35,
     "duration": 0.2,
 }
@@ -1157,133 +1157,150 @@ def _fallback_suggestion(
     avoid_texts: Optional[set[str]] = None,
     turn_hint: Optional[int] = None,
 ) -> str:
-    seed_source = (
-        f"{generate_uniqueness_seed()}|{context.get('music_prompt','')}|"
-        f"{','.join(context.get('genres',[]) if isinstance(context.get('genres'), list) else [])}|"
-        f"{turn_hint if turn_hint is not None else ''}"
-    )
-    seed_val = int(hashlib.sha256(seed_source.encode()).hexdigest(), 16)
-
-    def pick(values: list[str], offset: int = 0) -> str:
-        if not values:
-            return ""
-        return values[(seed_val + offset) % len(values)]
-
-    def pick_unique(candidates: list[str], field_name: str = field) -> str:
-        cleaned = []
-        seen = set()
-        for item in candidates:
-            text = (item or "").strip()
-            key = text.lower()
-            if not text or key in seen:
-                continue
-            cleaned.append(text)
-            seen.add(key)
-        if not cleaned:
-            return ""
-        recent = set(RECENT_SUGGESTIONS.get(field_name, []))
-        if avoid_texts:
-            recent.update({(x or "").strip().lower() for x in avoid_texts if x})
-        start = seed_val % len(cleaned)
-        for i in range(len(cleaned)):
-            candidate = cleaned[(start + i) % len(cleaned)]
-            if candidate.lower() not in recent:
-                return candidate
-        return cleaned[start]
-
+    rng = random.SystemRandom()
+    context = context or {}
     genres = context.get("genres", []) if isinstance(context.get("genres"), list) else []
     prompt = (context.get("music_prompt") or "").strip()
+    title_stop_words = {
+        "with", "from", "that", "this", "into", "over", "under", "about", "your", "their",
+        "there", "these", "those", "have", "been", "will", "just", "only", "more", "less",
+        "very", "make", "song", "track", "drums", "music", "prompt"
+    }
+    prompt_words = [
+        w for w in _tokenize_text(prompt)
+        if w not in TITLE_GENERIC_TERMS and w not in TITLE_BLACKLIST_TERMS and w not in title_stop_words
+    ]
+    recent = set(RECENT_SUGGESTIONS.get(field, []))
+    if avoid_texts:
+        recent.update({(x or "").strip().lower() for x in avoid_texts if x})
+
+    def pick_unique(candidates: list[str]) -> str:
+        cleaned = []
+        seen = set()
+        for raw in candidates:
+            item = (raw or "").strip()
+            key = item.lower()
+            if not item or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(item)
+        if not cleaned:
+            return ""
+        rng.shuffle(cleaned)
+        for item in cleaned:
+            if item.lower() not in recent:
+                return item
+        return cleaned[0]
 
     if field == "title":
-        title_a = ["Midnight", "Neon", "Afterdark", "Echo", "Velvet", "Pulse", "Aurora", "Signal", "Static", "Silver"]
-        title_b = ["Drive", "Afterglow", "Voltage", "Reflex", "Horizon", "Frequency", "Momentum", "Skyline", "Rush", "Drift"]
-        genre = genres[0] if genres else ""
-        cores = [f"{a} {b}" for a in title_a for b in title_b]
-        options = [f"{genre} {core}".strip() for core in cores] if genre else cores
+        leads = ["Neon", "Midnight", "Velvet", "Solar", "Lunar", "Echo", "Prism", "Pulse", "Afterdark", "Skyline", "Starlit", "Voltage"]
+        tails = ["Drive", "Rush", "Signal", "Flow", "Reflex", "Motion", "Drift", "Tempo", "Glow", "Shift", "Mode", "Wave"]
+        context_terms = [w.title() for w in prompt_words if len(w) >= 4][:16]
+        genre_terms = [g.split("(")[0].strip() for g in genres[:3] if g]
+        options = []
+        for _ in range(80):
+            lead = rng.choice(leads)
+            tail = rng.choice(tails)
+            if context_terms and rng.random() < 0.6:
+                center = rng.choice(context_terms)
+            elif genre_terms and rng.random() < 0.45:
+                center = rng.choice(genre_terms)
+            else:
+                center = ""
+            title = " ".join([lead, center, tail]).strip()
+            title = re.sub(r"\s+", " ", title)
+            if len(title) <= 44 and 1 <= len(title.split()) <= 5:
+                options.append(title)
         return pick_unique(options)
 
     if field == "music_prompt":
-        genre = ", ".join(genres[:2]) if genres else pick(["Pop, Electronic", "Electronic, Ambient", "R&B, Pop"])
-        bass_opts = ["deep sub bass", "rubbery synth bass", "clean punchy low-end", "warm analog bass"]
-        drum_opts = ["tight kick-snare groove", "syncopated drum pattern", "driving four-on-the-floor drums", "crisp broken-beat drums"]
-        top_opts = ["airy vocal hook", "glassy lead motif", "plucked synth melody", "guitar-texture counterline"]
-        mix_opts = ["wide chorus lift", "focused mono-compatible low-end", "controlled transient punch", "clean vocal-forward balance"]
-        base_prompt = prompt[:180] if prompt else "A polished modern track concept"
+        genre_text = ", ".join(genres[:3]) if genres else rng.choice(["Electronic Pop", "Indie R&B", "Afro Pop", "Melodic House"])
+        drums = ["tight kick-snare groove", "driving four-on-the-floor drums", "syncopated drum pocket", "broken-beat percussion accents"]
+        basses = ["warm analog bassline", "clean sub-bass anchor", "rubbery synth bass", "deep low-end pulse"]
+        tops = ["airy lead hook", "plucked synth motif", "vocal-forward topline", "guitar-texture lead line"]
+        arrangements = ["intro to verse tension and wide chorus lift", "short intro, focused verse, explosive chorus, restrained bridge", "cinematic build then percussive payoff", "hook-first opening with dynamic final chorus"]
+        mixes = ["clear vocal pocket and controlled transients", "mono-safe low end with stereo chorus expansion", "tight sidechain movement and polished top-end", "punchy drums with clean midrange separation"]
+        prompt_focus = " ".join(prompt.split()[:20]).strip()
         options = []
-        for drum_idx, drum in enumerate(drum_opts):
-            for bass_idx, bass in enumerate(bass_opts):
-                for top_idx, top in enumerate(top_opts):
-                    mix = pick(mix_opts, drum_idx + bass_idx + top_idx)
-                    options.append(
-                        f"{base_prompt}. Build around {genre} with {drum}, {bass}, and {top}. "
-                        f"Arrange with tension in the verse and a strong chorus payoff, keeping a {mix}."
-                    )
+        for _ in range(120):
+            opener = (
+                f"Develop this direction further: {prompt_focus}."
+                if prompt_focus and rng.random() < 0.7
+                else f"Build a {genre_text} production with a clear emotional arc."
+            )
+            options.append(
+                f"{opener} Use {rng.choice(drums)}, {rng.choice(basses)}, and {rng.choice(tops)}. "
+                f"Arrange with {rng.choice(arrangements)} and finish with {rng.choice(mixes)}."
+            )
         return pick_unique(options)
 
     if field == "genres":
         all_genres = get_all_genres()
-        if genres:
-            options = []
-            for i in range(6):
-                pool = list(dict.fromkeys(genres + [pick(all_genres, i + 13), pick(all_genres, i + 29)]))
-                options.append(", ".join(pool[:4]))
-            return pick_unique(options)
+        base = [g for g in genres if g]
         options = []
-        for i in range(10):
-            options.append(", ".join([pick(all_genres, i + 3), pick(all_genres, i + 17)]))
+        for _ in range(32):
+            candidate = list(dict.fromkeys(base))
+            rng.shuffle(all_genres)
+            for g in all_genres:
+                if g not in candidate:
+                    candidate.append(g)
+                if len(candidate) >= rng.choice([2, 3, 4]):
+                    break
+            options.append(", ".join(candidate[:4]))
         return pick_unique(options)
 
     if field == "vocal_languages":
         lang_pool = [l for l in LANGUAGE_KNOWLEDGE_BASE if l != "Instrumental"]
-        return pick_unique(lang_pool)
+        if "instrumental" in prompt.lower():
+            return "Instrumental"
+        rng.shuffle(lang_pool)
+        pick_count = rng.choice([1, 1, 2, 2, 3])
+        return ", ".join(lang_pool[:pick_count])
 
     if field == "duration":
-        # Keep duration suggestions practical for music generation UX while remaining unique.
-        base = max(20, min(300, 20 + (seed_val % 260)))
-        durations = set()
-        offsets = [0, 3, 7, 11, 19, 27, 31, 43, 59]
-        for off in offsets:
-            sec = max(20, min(360, base + off))
-            if sec < 60:
-                durations.add(f"{sec}s")
-            else:
-                m, s = divmod(sec, 60)
-                durations.add(f"{m}m{s}s" if s else f"{m}m")
-        return pick_unique(list(durations))
+        requested = _normalize_duration_seconds(context.get("duration_seconds"), default=30)
+        candidates = []
+        for offset in [-8, -5, -3, 0, 4, 7, 11, 14]:
+            sec = max(20, min(360, requested + offset + rng.randint(-2, 2)))
+            candidates.append(_seconds_to_duration_text(sec))
+        return pick_unique(candidates)
 
     if field == "artist_inspiration":
         artists = get_all_artists()
+        rng.shuffle(artists)
         options = []
-        for i in range(10):
-            options.append(", ".join([pick(artists, i + 5), pick(artists, i + 21), pick(artists, i + 37)]))
+        for _ in range(40):
+            start = rng.randint(0, max(0, len(artists) - 4))
+            pick_count = rng.choice([2, 3, 4])
+            options.append(", ".join(artists[start:start + pick_count]))
         return pick_unique(options)
 
     if field == "video_style":
-        color_opts = ["neon teal + amber", "deep blue + magenta", "warm tungsten + red practicals", "silver monochrome"]
-        camera_opts = ["handheld push-ins", "slow tracking wides", "shoulder-level follow shots", "low-angle glide shots"]
-        edit_opts = ["rhythmic jump cuts", "long takes with beat-matched transitions", "strobe-accented cut points", "cross-dissolves on downbeats"]
+        palettes = ["neon magenta and cyan", "warm tungsten with deep blue shadows", "high-contrast monochrome with red accents", "sunset amber with steel-blue highlights"]
+        cameras = ["slow gimbal tracking with occasional handheld closeups", "locked wides with punch-in detail shots", "low-angle glide shots and controlled whip pans", "steady shoulder shots with rhythmic cutaways"]
+        edits = ["beat-synced hard cuts in the chorus", "long takes in verses and quick transitions at drops", "speed ramps on drum fills and clean match cuts", "cross-dissolves only in emotional transitions"]
+        settings = ["night city streets", "industrial interior with haze", "minimal studio with practical lights", "rain-soaked exterior reflections"]
         options = []
-        for color in color_opts:
-            for camera in camera_opts:
-                for edit in edit_opts:
-                    options.append(
-                        f"Use {color} palette with {camera}. "
-                        f"Keep lighting cinematic and motion-driven, then finish with {edit} aligned to the drum accents."
-                    )
+        for _ in range(80):
+            options.append(
+                f"Shoot in {rng.choice(settings)} using a {rng.choice(palettes)} palette. "
+                f"Use {rng.choice(cameras)} and {rng.choice(edits)} to mirror the groove."
+            )
         return pick_unique(options)
 
     if field == "lyrics":
-        image_opts = ["city lights in rain", "empty freeway at 2AM", "flickering hallway neon", "late-night window reflections"]
-        arc_opts = ["rebuild confidence", "escape emotional noise", "push through pressure", "choose clarity over chaos"]
+        emotions = ["self-belief after pressure", "late-night clarity after chaos", "moving on without regret", "reclaiming energy after burnout"]
+        imagery = ["city lights on wet roads", "subway windows and passing shadows", "midnight rooftops and distant sirens", "empty dancefloor before sunrise"]
+        hooks = ["keep moving, never folding", "I hear the pulse, I choose the fire", "new signal, same heartbeat", "no static in my vision now"]
         options = []
-        for arc in arc_opts:
-            for image in image_opts:
-                options.append(
-                    f"A focused hook about how to {arc}, using {image} as the repeating chorus image."
-                )
+        for _ in range(60):
+            options.append(
+                f"Theme around {rng.choice(emotions)} with recurring imagery of {rng.choice(imagery)}. "
+                f"Center the chorus hook on '{rng.choice(hooks)}'."
+            )
         return pick_unique(options)
 
-    return "Creative suggestion"
+    return ""
 
 async def generate_ai_suggestion(
     field: str,
@@ -1299,6 +1316,7 @@ async def generate_ai_suggestion(
 
     if not openai_client:
         fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
+        fallback = _strip_machine_suffixes(field, fallback)
         if field in ["genres", "vocal_languages"]:
             fallback = validate_list_suggestion(field, fallback)
         if field == "duration":
@@ -1342,7 +1360,7 @@ async def generate_ai_suggestion(
                     timeout=SUGGEST_OPENAI_TIMEOUT_SECONDS,
                 )
             )
-            suggestion = (response.choices[0].message.content or "").strip()
+            suggestion = _strip_machine_suffixes(field, (response.choices[0].message.content or "").strip())
             if field in ["music_prompt", "lyrics", "video_style", "title"]:
                 suggestion = validate_music_specific_suggestion(field, suggestion)
             if field in ["genres", "vocal_languages"]:
@@ -1407,6 +1425,7 @@ async def generate_ai_suggestion(
                 return finalized
 
     fallback = _fallback_suggestion(field, context, seen_in_scope, suggestion_turn)
+    fallback = _strip_machine_suffixes(field, fallback)
     if field in ["genres", "vocal_languages"]:
         fallback = validate_list_suggestion(field, fallback)
     if field == "duration":
@@ -1606,6 +1625,18 @@ def _seconds_to_duration_text(seconds: int) -> str:
     return f"{minutes}m{rem}s"
 
 
+def _strip_machine_suffixes(field: str, text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s*\[[0-9a-f]{3,8}\]\s*$", "", cleaned, flags=re.IGNORECASE)
+    if field == "title":
+        cleaned = re.sub(r"\s+[0-9a-f]{4,8}\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("Variation cue:", "").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -")
+    return cleaned
+
+
 def _enforce_unique_suggestion(
     field: str,
     suggestion: str,
@@ -1614,7 +1645,7 @@ def _enforce_unique_suggestion(
     seen_in_scope: set[str],
     turn_hint: int,
 ) -> str:
-    base = (suggestion or "").strip()
+    base = _strip_machine_suffixes(field, suggestion)
     if not base:
         return ""
 
@@ -1638,19 +1669,17 @@ def _enforce_unique_suggestion(
         "Rush", "Shift", "Mode", "Edit", "Version", "Pass"
     ]
     text_cues = [
-        "tighten transient punch",
-        "widen stereo movement in chorus",
-        "add syncopated groove accents",
-        "deepen low-end pocket and glue",
-        "shift hook phrasing for contrast",
-        "increase dynamic lift into drop",
-        "shape vocal space with short delay",
-        "lean into rhythmic motif variation",
+        "emphasize groove movement in the chorus",
+        "tighten transient focus in the drum bus",
+        "shape vocal space with a short delay tail",
+        "add subtle syncopation in the supporting rhythm",
+        "increase dynamic lift entering the hook",
+        "lean into motif contrast between verse and chorus",
+        "focus low-end clarity with cleaner sidechain timing",
+        "expand stereo motion around melodic accents",
     ]
 
     def build_candidate(step: int) -> str:
-        token = format((seed_val + step * 7919) % 65536, "04x")
-
         if field == "title":
             cleaned = re.sub(r"[^A-Za-z0-9'\-\s]", " ", base)
             cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -1658,7 +1687,7 @@ def _enforce_unique_suggestion(
             stem = " ".join(words) if words else "Track"
             lead = title_leads[(seed_val + step) % len(title_leads)]
             tail = title_tails[(seed_val // 17 + step) % len(title_tails)]
-            candidate = f"{lead} {stem} {tail} {token}".strip()
+            candidate = f"{lead} {stem} {tail}".strip()
             return candidate[:44].strip()
 
         if field == "duration":
@@ -1716,12 +1745,12 @@ def _enforce_unique_suggestion(
         if field in ["music_prompt", "video_style", "lyrics"]:
             cue = text_cues[(seed_val + step) % len(text_cues)]
             spacer = " " if base.endswith((".", "!", "?")) else ". "
-            return f"{base}{spacer}Variation cue: {cue} [{token}]"
+            return f"{base}{spacer}{cue.capitalize()}."
 
-        return f"{base} {token}"
+        return base
 
     for step in range(0, 30):
-        candidate = build_candidate(step).strip()
+        candidate = _strip_machine_suffixes(field, build_candidate(step))
         if not candidate:
             continue
         if field in ["genres", "vocal_languages"]:
@@ -1740,10 +1769,17 @@ def _enforce_unique_suggestion(
             continue
         return candidate
 
-    fallback_token = uuid.uuid4().hex[:6]
     if field == "duration":
         return _seconds_to_duration_text((_duration_text_to_seconds(base) or 30) + 3)
-    return f"{base} {fallback_token}"
+    if field == "title":
+        suffixes = ["Version", "Rework", "Cut", "Session", "Edit"]
+        suffix = suffixes[seed_val % len(suffixes)]
+        return f"{base} {suffix}"[:44].strip()
+    if field in ["music_prompt", "video_style", "lyrics"]:
+        cue = text_cues[seed_val % len(text_cues)].capitalize()
+        spacer = " " if base.endswith((".", "!", "?")) else ". "
+        return f"{base}{spacer}{cue}."
+    return base
 
 
 async def _finalize_unique_suggestion(
@@ -1764,6 +1800,7 @@ async def _finalize_unique_suggestion(
         seen_in_scope=seen_in_scope,
         turn_hint=turn_hint,
     )
+    unique = _strip_machine_suffixes(field, unique)
     if not unique:
         return ""
     normalized = _normalize_suggestion_text(unique)
@@ -2986,9 +3023,7 @@ async def api_health():
     if FREE_TIER_MODE:
         music_generation_mode = "free_curated_library"
     elif MUSICGEN_API_URL:
-        music_generation_mode = "external_music_provider"
-    elif REPLICATE_API_TOKEN:
-        music_generation_mode = f"replicate:{REPLICATE_MUSIC_MODEL}"
+        music_generation_mode = "self_host_musicgen"
     else:
         music_generation_mode = "unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_curated_library"
     return {
@@ -2999,7 +3034,7 @@ async def api_health():
         "legacy_db_name": LEGACY_DB_NAME if legacy_db is not None else None,
         "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
         "music_generation": music_generation_mode,
-        "music_generation_model": REPLICATE_MUSIC_MODEL if REPLICATE_API_TOKEN else None,
+        "music_generation_model": MUSICGEN_API_URL if MUSICGEN_API_URL else None,
         "video_generation": "configured" if (REPLICATE_API_TOKEN and not FREE_TIER_MODE) else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
         "strict_real_media_output": STRICT_REAL_MEDIA_OUTPUT,
         "free_tier_mode": FREE_TIER_MODE,

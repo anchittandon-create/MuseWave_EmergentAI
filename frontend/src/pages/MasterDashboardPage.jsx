@@ -92,6 +92,70 @@ const uniqueSorted = (values) =>
     )
   ).sort((a, b) => a.localeCompare(b));
 
+const sanitizeFilename = (value) => {
+  const base = String(value || "media")
+    .replace(/[\\/:*?"<>|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return base || "media";
+};
+
+const extensionFromUrl = (url, fallback) => {
+  try {
+    const clean = String(url || "").split("?")[0];
+    const ext = clean.split(".").pop()?.toLowerCase();
+    if (ext && /^[a-z0-9]{2,5}$/.test(ext)) return ext;
+  } catch (_) {
+    // noop
+  }
+  return fallback;
+};
+
+const buildSongDownloadUrl = (record, kind = "audio", ownerId) => {
+  const songId = record?.id;
+  const userId = ownerId || record?.user_id;
+  if (!songId || !userId) return null;
+  if (kind === "video") {
+    return `${API}/songs/${songId}/download-video?user_id=${encodeURIComponent(userId)}`;
+  }
+  return `${API}/songs/${songId}/download?user_id=${encodeURIComponent(userId)}`;
+};
+
+const forceDownloadFile = async (url, filenameFallback) => {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Download failed");
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filenameFallback;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(objectUrl);
+};
+
+const downloadRecordMedia = async (record, kind = "audio", ownerId) => {
+  const directUrl = kind === "video" ? record?.video_url : record?.audio_url;
+  const proxyUrl = buildSongDownloadUrl(record, kind, ownerId);
+  const sourceUrl = proxyUrl || directUrl;
+  if (!sourceUrl) {
+    toast.error(`${kind === "video" ? "Video" : "Audio"} is not available`);
+    return;
+  }
+  const ext = extensionFromUrl(directUrl || sourceUrl, kind === "video" ? "mp4" : "mp3");
+  const filename = `${sanitizeFilename(record?.title || "track")}.${ext}`;
+  try {
+    await forceDownloadFile(sourceUrl, filename);
+    toast.success(`${kind === "video" ? "Video" : "Audio"} download started`);
+  } catch (error) {
+    toast.error(error?.message || `Failed to download ${kind}`);
+  }
+};
+
 export default function MasterDashboardPage({ user }) {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("tracks");
@@ -438,14 +502,22 @@ export default function MasterDashboardPage({ user }) {
                           </Button>
                         ) : null}
                         {!isAlbum && item.audio_url && (
-                          <a href={item.audio_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80"
+                            onClick={() => downloadRecordMedia(item, "audio")}
+                          >
                             <Download className="w-3 h-3" />Audio
-                          </a>
+                          </button>
                         )}
                         {!isAlbum && item.video_url && (
-                          <a href={item.video_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80"
+                            onClick={() => downloadRecordMedia(item, "video")}
+                          >
                             <Download className="w-3 h-3" />Video
-                          </a>
+                          </button>
                         )}
                         <Button size="sm" variant="ghost" className="h-8" onClick={() => setDetailsModal({ type: isAlbum ? "album" : "track", data: item })}>
                           <FileText className="w-4 h-4" />
@@ -543,10 +615,14 @@ function MasterMediaModal({ record, onClose }) {
                   +10s
                 </Button>
               </div>
-              <a href={record.audio_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
+              <button
+                type="button"
+                onClick={() => downloadRecordMedia(record, "audio")}
+                className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80"
+              >
                 <Download className="w-4 h-4" />
                 Download Audio
-              </a>
+              </button>
             </div>
           ) : (
             <div className="rounded-lg border border-white/10 bg-secondary/30 p-3 text-sm text-muted-foreground">
@@ -580,10 +656,14 @@ function MasterMediaModal({ record, onClose }) {
                   +10s
                 </Button>
               </div>
-              <a href={record.video_url} download className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80">
+              <button
+                type="button"
+                onClick={() => downloadRecordMedia(record, "video")}
+                className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80"
+              >
                 <Download className="w-4 h-4" />
                 Download Video
-              </a>
+              </button>
             </div>
           ) : (
             <div className="rounded-lg border border-white/10 bg-secondary/30 p-3 text-sm text-muted-foreground">
@@ -646,14 +726,22 @@ function MasterDetailsModal({ type, record, onClose }) {
                   <p className="text-xs text-muted-foreground line-clamp-3">Lyrics: {song.lyrics || "-"}</p>
                   <div className="flex gap-2 mt-2">
                     {song.audio_url && (
-                      <a href={song.audio_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                      <button
+                        type="button"
+                        onClick={() => downloadRecordMedia(song, "audio", song.user_id || record?.user_id)}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80"
+                      >
                         <Download className="w-3 h-3" />Audio
-                      </a>
+                      </button>
                     )}
                     {song.video_url && (
-                      <a href={song.video_url} download className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80">
+                      <button
+                        type="button"
+                        onClick={() => downloadRecordMedia(song, "video", song.user_id || record?.user_id)}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80"
+                      >
                         <Download className="w-3 h-3" />Video
-                      </a>
+                      </button>
                     )}
                   </div>
                 </div>
