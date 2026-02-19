@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw
 import json
 import re
 import time
-from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl, unquote_to_bytes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -471,6 +471,20 @@ def _extract_audio_url(payload: dict) -> Optional[str]:
                     return nested
     return None
 
+
+def _decode_data_url_blob(data_url: str) -> tuple[bytes, str]:
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        raise ValueError("Not a data URL")
+    if "," not in data_url:
+        raise ValueError("Malformed data URL")
+    header, payload = data_url.split(",", 1)
+    mime = "application/octet-stream"
+    if header.startswith("data:"):
+        mime = header[5:].split(";")[0] or mime
+    if ";base64" in header:
+        return base64.b64decode(payload), mime
+    return unquote_to_bytes(payload), mime
+
 def _extract_replicate_media_url(output) -> Optional[str]:
     """Extract URL from common Replicate output shapes."""
     if isinstance(output, str) and output.startswith(("http://", "https://")):
@@ -706,27 +720,48 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 headers["Authorization"] = f"Bearer {MUSICGEN_API_KEY}"
             final_prompt = _build_musicgen_prompt(song_payload)
             requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=30)
-            provider_payload = {
-                "title": song_payload.get("title", ""),
-                "prompt": final_prompt,
-                "genres": song_payload.get("genres", []),
-                "lyrics": song_payload.get("lyrics", ""),
-                "vocal_languages": song_payload.get("vocal_languages", []),
-                "duration_seconds": requested_duration,
-                "artist_inspiration": song_payload.get("artist_inspiration", ""),
-            }
+            is_hf_inference = (
+                "api-inference.huggingface.co/models/" in MUSICGEN_API_URL
+                or "router.huggingface.co/hf-inference/models/" in MUSICGEN_API_URL
+            )
+            if is_hf_inference:
+                headers["Accept"] = "audio/mpeg"
+                provider_payload = {
+                    "inputs": final_prompt,
+                    "parameters": {
+                        "duration": requested_duration,
+                    },
+                }
+            else:
+                provider_payload = {
+                    "title": song_payload.get("title", ""),
+                    "prompt": final_prompt,
+                    "genres": song_payload.get("genres", []),
+                    "lyrics": song_payload.get("lyrics", ""),
+                    "vocal_languages": song_payload.get("vocal_languages", []),
+                    "duration_seconds": requested_duration,
+                    "artist_inspiration": song_payload.get("artist_inspiration", ""),
+                }
             response = await asyncio.to_thread(
                 lambda: requests.post(
                     MUSICGEN_API_URL,
                     json=provider_payload,
                     headers=headers,
-                    timeout=120,
+                    timeout=180,
                 )
             )
             if response.status_code >= 400:
                 provider_failures.append(f"Self-host MusicGen HTTP {response.status_code}")
                 logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
             else:
+                content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+                # HuggingFace / raw providers may return direct audio bytes.
+                if response.content and (content_type.startswith("audio/") or (is_hf_inference and not content_type.startswith("application/json"))):
+                    mime = content_type if content_type.startswith("audio/") else "audio/mpeg"
+                    encoded = base64.b64encode(response.content).decode("ascii")
+                    data_url = f"data:{mime};base64,{encoded}"
+                    return data_url, requested_duration, False, "self_host_musicgen"
+
                 data = response.json() if response.content else {}
                 audio_url = _extract_audio_url(data if isinstance(data, dict) else {})
                 if audio_url:
@@ -2698,19 +2733,27 @@ async def download_album(album_id: str, user_id: str):
                     # Download audio file
                     audio_url = song.get('audio_url')
                     if audio_url:
-                        response = requests.get(audio_url, timeout=10)
-                        if response.status_code == 200:
+                        if str(audio_url).startswith("data:"):
+                            content, mime = _decode_data_url_blob(audio_url)
+                            guessed_ext = mimetypes.guess_extension(mime) or ".mp3"
+                            file_extension = guessed_ext.lstrip(".")
+                        else:
+                            response = requests.get(audio_url, timeout=10)
+                            if response.status_code != 200:
+                                continue
+                            content = response.content
                             file_extension = audio_url.split('.')[-1].split('?')[0] or 'mp3'
-                            filename = f"{idx:02d}__{song.get('title', f'Track {idx}')}.{file_extension}"
-                            zip_file.writestr(filename, response.content)
-                            
-                            # Add to metadata
-                            album_info["songs"].append({
-                                "title": song.get('title', ''),
-                                "duration": song.get('duration_seconds', 0),
-                                "lyrics": song.get('lyrics', ''),
-                                "file": filename
-                            })
+
+                        filename = f"{idx:02d}__{song.get('title', f'Track {idx}')}.{file_extension}"
+                        zip_file.writestr(filename, content)
+
+                        # Add to metadata
+                        album_info["songs"].append({
+                            "title": song.get('title', ''),
+                            "duration": song.get('duration_seconds', 0),
+                            "lyrics": song.get('lyrics', ''),
+                            "file": filename
+                        })
                 except Exception as e:
                     logger.error(f"Error downloading song {song.get('id')}: {e}")
             
@@ -2743,18 +2786,25 @@ async def download_song(song_id: str, user_id: str):
         audio_url = song.get('audio_url')
         if not audio_url:
             raise HTTPException(status_code=404, detail="Audio not found")
-        
-        # Download audio file
-        response = requests.get(audio_url, timeout=10)
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to download audio")
-        
-        file_extension = audio_url.split('.')[-1].split('?')[0] or 'mp3'
+
+        if str(audio_url).startswith("data:"):
+            content, mime = _decode_data_url_blob(audio_url)
+            guessed_ext = mimetypes.guess_extension(mime) or ".mp3"
+            file_extension = guessed_ext.lstrip(".")
+            media_type = mime
+        else:
+            response = requests.get(audio_url, timeout=10)
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to download audio")
+            content = response.content
+            file_extension = audio_url.split('.')[-1].split('?')[0] or 'mp3'
+            media_type = response.headers.get("content-type", "audio/mpeg")
+
         filename = f"{song.get('title', 'song')}.{file_extension}"
-        
+
         return StreamingResponse(
-            iter([response.content]),
-            media_type="audio/mpeg",
+            iter([content]),
+            media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
     
