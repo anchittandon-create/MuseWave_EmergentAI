@@ -56,6 +56,9 @@ MASTER_ADMIN_ROLE = "Master User"
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+AI_SUGGEST_PROVIDER = os.environ.get("AI_SUGGEST_PROVIDER", "gemini").strip().lower()
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
 MUSICGEN_API_KEY = os.environ.get("MUSICGEN_API_KEY")
