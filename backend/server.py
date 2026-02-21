@@ -456,18 +456,22 @@ def _extract_audio_url(payload: dict) -> Optional[str]:
         (payload.get("data") or {}).get("audio_url") if isinstance(payload.get("data"), dict) else None,
     ]
     for value in candidates:
-        if isinstance(value, str) and value.startswith(("http://", "https://")):
+        if isinstance(value, str) and value.startswith(("http://", "https://", "data:audio/")):
             return value
     output = payload.get("output")
     if isinstance(output, str) and output.startswith(("http://", "https://")):
         return output
+    if isinstance(output, dict):
+        nested = output.get("audio_url") or output.get("url")
+        if isinstance(nested, str) and nested.startswith(("http://", "https://", "data:audio/")):
+            return nested
     if isinstance(output, list):
         for item in output:
             if isinstance(item, str) and item.startswith(("http://", "https://")):
                 return item
             if isinstance(item, dict):
                 nested = item.get("url") or item.get("audio_url")
-                if isinstance(nested, str) and nested.startswith(("http://", "https://")):
+                if isinstance(nested, str) and nested.startswith(("http://", "https://", "data:audio/")):
                     return nested
     return None
 
