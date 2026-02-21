@@ -1,7 +1,7 @@
 """
 MuseWave - AI Music Creation Application
 Independent backend with:
-- OpenAI-powered AI suggestions and lyrics synthesis
+- Gemini/OpenAI-powered AI suggestions and lyrics synthesis
 - Optional external provider hook for actual music generation
 - Optional Replicate-based video generation
 - Global knowledge bases for genres/languages/artists
@@ -56,8 +56,8 @@ MASTER_ADMIN_ROLE = "Master User"
 
 # API Keys
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip() or None
+GEMINI_MODEL = (os.environ.get("GEMINI_MODEL", "gemini-1.5-flash") or "gemini-1.5-flash").strip()
 AI_SUGGEST_PROVIDER = os.environ.get("AI_SUGGEST_PROVIDER", "gemini").strip().lower()
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
@@ -78,6 +78,107 @@ SUGGEST_OPENAI_TIMEOUT_SECONDS = max(
 )
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+
+def _ai_provider_order() -> list[str]:
+    provider = (AI_SUGGEST_PROVIDER or "").strip().lower()
+    if provider == "openai":
+        return ["openai", "gemini"]
+    if provider == "gemini":
+        return ["gemini", "openai"]
+    return ["gemini", "openai"]
+
+
+def _extract_gemini_text(payload: dict) -> str:
+    candidates = payload.get("candidates") or []
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            text = str(part.get("text") or "").strip()
+            if text:
+                return text
+    prompt_feedback = payload.get("promptFeedback") or {}
+    block_reason = prompt_feedback.get("blockReason")
+    if block_reason:
+        raise RuntimeError(f"Gemini blocked response: {block_reason}")
+    raise RuntimeError("Gemini returned empty response")
+
+
+def _call_gemini_text(system_prompt: str, user_prompt: str) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is missing")
+
+    endpoint = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": (
+                            f"{system_prompt}\n\n"
+                            f"User request:\n{user_prompt}\n\n"
+                            "Return only valid JSON with no markdown."
+                        )
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 1.0,
+            "topP": 0.95,
+            "topK": 40,
+            "maxOutputTokens": 1400,
+            "responseMimeType": "application/json",
+        },
+    }
+    response = requests.post(
+        endpoint,
+        headers={"Content-Type": "application/json"},
+        json=body,
+        timeout=max(SUGGEST_OPENAI_TIMEOUT_SECONDS, 10),
+    )
+    if response.status_code >= 400:
+        raw_error = (response.text or "").strip().replace("\n", " ")
+        raise RuntimeError(f"Gemini HTTP {response.status_code}: {raw_error[:220]}")
+    payload = response.json()
+    return _extract_gemini_text(payload)
+
+
+def _call_openai_text(system_prompt: str, user_prompt: str) -> str:
+    if not openai_client:
+        raise RuntimeError("OPENAI_API_KEY is missing")
+    response = openai_client.chat.completions.create(
+        model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=1.0,
+        top_p=0.95,
+        frequency_penalty=0.7,
+        presence_penalty=0.8,
+        max_tokens=900,
+        timeout=max(SUGGEST_OPENAI_TIMEOUT_SECONDS, 10),
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+async def _generate_context_text(system_prompt: str, user_prompt: str) -> str:
+    last_error: Optional[str] = None
+    for provider in _ai_provider_order():
+        try:
+            if provider == "gemini":
+                return await asyncio.to_thread(_call_gemini_text, system_prompt, user_prompt)
+            if provider == "openai":
+                return await asyncio.to_thread(_call_openai_text, system_prompt, user_prompt)
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning("AI context generation via %s failed: %s", provider, exc)
+    raise RuntimeError(last_error or "No AI provider available for suggestions")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1502,8 +1603,11 @@ def _coerce_music_context(raw: dict, incoming: dict, entropy_seed: str) -> dict:
 
 
 async def _build_music_context(field: str, current_value: str, context: dict) -> dict:
-    if not openai_client:
-        raise HTTPException(status_code=503, detail="AI suggestion is unavailable. OPENAI_API_KEY is missing or invalid.")
+    if not GEMINI_API_KEY and not openai_client:
+        raise HTTPException(
+            status_code=503,
+            detail="AI suggestion is unavailable. Set GEMINI_API_KEY or OPENAI_API_KEY.",
+        )
 
     entropy_seed = _entropy_seed()
     compact_context = {
@@ -1539,22 +1643,7 @@ async def _build_music_context(field: str, current_value: str, context: dict) ->
         f"Input context JSON:\n{json.dumps(compact_context, ensure_ascii=True)}"
     )
 
-    response = await asyncio.to_thread(
-        lambda: openai_client.chat.completions.create(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=1.0,
-            top_p=0.95,
-            frequency_penalty=0.7,
-            presence_penalty=0.8,
-            max_tokens=900,
-            timeout=max(SUGGEST_OPENAI_TIMEOUT_SECONDS, 10),
-        )
-    )
-    content = (response.choices[0].message.content or "").strip()
+    content = (await _generate_context_text(system_prompt, user_prompt)).strip()
     parsed = _safe_json_dict(content)
     return _coerce_music_context(parsed, compact_context, entropy_seed)
 
@@ -3146,6 +3235,12 @@ async def root():
 
 @api_router.get("/health")
 async def api_health():
+    if GEMINI_API_KEY:
+        ai_suggestion_status = f"configured:{AI_SUGGEST_PROVIDER or 'gemini'}"
+    elif OPENAI_API_KEY:
+        ai_suggestion_status = "configured:openai_fallback_only"
+    else:
+        ai_suggestion_status = "missing_gemini_and_openai_keys"
     if FREE_TIER_MODE:
         music_generation_mode = "free_curated_library"
     elif MUSICGEN_API_URL:
@@ -3158,7 +3253,7 @@ async def api_health():
         "mode": "hybrid",
         "db_name": PRIMARY_DB_NAME,
         "legacy_db_name": LEGACY_DB_NAME if legacy_db is not None else None,
-        "ai_suggestions": "configured" if OPENAI_API_KEY else "missing_openai_api_key",
+        "ai_suggestions": ai_suggestion_status,
         "music_generation": music_generation_mode,
         "music_generation_model": MUSICGEN_API_URL if MUSICGEN_API_URL else None,
         "video_generation": "configured" if (REPLICATE_API_TOKEN and not FREE_TIER_MODE) else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
