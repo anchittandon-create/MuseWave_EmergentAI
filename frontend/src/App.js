@@ -57,7 +57,7 @@ const resolveSuggestBackendUrl = () => {
   if (normalizedConfigured) {
     return normalizedConfigured;
   }
-  return DEFAULT_SUGGEST_BACKEND_URL;
+  return BACKEND_URL || DEFAULT_SUGGEST_BACKEND_URL;
 };
 
 const SUGGEST_BACKEND_URL = resolveSuggestBackendUrl();
