@@ -33,6 +33,10 @@ from PIL import Image, ImageDraw
 import json
 import re
 import time
+import math
+import shutil
+import subprocess
+import tempfile
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl, unquote_to_bytes
 
 ROOT_DIR = Path(__file__).parent
@@ -62,6 +66,8 @@ AI_SUGGEST_PROVIDER = os.environ.get("AI_SUGGEST_PROVIDER", "gemini").strip().lo
 REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 MUSICGEN_API_URL = os.environ.get("MUSICGEN_API_URL")
 MUSICGEN_API_KEY = os.environ.get("MUSICGEN_API_KEY")
+MUSICGEN_MAX_CHUNK_SECONDS = max(5, min(int(os.environ.get("MUSICGEN_MAX_CHUNK_SECONDS", "30")), 30))
+MUSICGEN_REQUEST_TIMEOUT_SECONDS = max(30, min(int(os.environ.get("MUSICGEN_REQUEST_TIMEOUT_SECONDS", "240")), 900))
 REPLICATE_MUSIC_MODEL = os.environ.get(
     "REPLICATE_MUSIC_MODEL",
     "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
@@ -580,6 +586,196 @@ def _extract_audio_url(payload: dict) -> Optional[str]:
     return None
 
 
+def _extract_gemini_inline_audio_data_url(payload: dict) -> Optional[str]:
+    """
+    Gemini-style extraction:
+    candidates[].content.parts[].inlineData.{mimeType,data(base64)}
+    """
+    candidates = payload.get("candidates") or []
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            inline_data = part.get("inlineData") if isinstance(part, dict) else None
+            if not isinstance(inline_data, dict):
+                continue
+            raw = str(inline_data.get("data") or "").strip()
+            if not raw:
+                continue
+            mime = str(inline_data.get("mimeType") or "audio/mpeg").strip() or "audio/mpeg"
+            return f"data:{mime};base64,{raw}"
+    return None
+
+
+def _extract_audio_data_url(payload: dict) -> Optional[str]:
+    # Gemini and other provider payload shapes that embed base64 audio.
+    gemini_audio = _extract_gemini_inline_audio_data_url(payload)
+    if gemini_audio:
+        return gemini_audio
+
+    candidates = [
+        payload.get("audio_data_url"),
+        payload.get("audioDataUrl"),
+        payload.get("data_url"),
+        payload.get("audio_base64"),
+        payload.get("audioBase64"),
+        payload.get("audio"),
+        payload.get("base64_audio"),
+        (payload.get("data") or {}).get("audio_data_url") if isinstance(payload.get("data"), dict) else None,
+        (payload.get("data") or {}).get("audio_base64") if isinstance(payload.get("data"), dict) else None,
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.startswith("data:audio/"):
+            return value
+
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        raw = value.strip()
+        if not raw or raw.startswith(("http://", "https://")):
+            continue
+        if re.fullmatch(r"[A-Za-z0-9+/=\s]+", raw):
+            compact = re.sub(r"\s+", "", raw)
+            if compact:
+                return f"data:audio/mpeg;base64,{compact}"
+    return None
+
+
+def _build_data_url_blob(audio_bytes: bytes, mime: str) -> str:
+    normalized_mime = (mime or "").strip().lower()
+    if not normalized_mime.startswith("audio/"):
+        normalized_mime = "audio/mpeg"
+    encoded = base64.b64encode(audio_bytes).decode("ascii")
+    return f"data:{normalized_mime};base64,{encoded}"
+
+
+def _fetch_audio_blob_from_reference(audio_ref: str) -> tuple[bytes, str]:
+    if not audio_ref:
+        raise ValueError("audio reference is empty")
+    if audio_ref.startswith("data:"):
+        return _decode_data_url_blob(audio_ref)
+
+    response = requests.get(audio_ref, timeout=MUSICGEN_REQUEST_TIMEOUT_SECONDS)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Audio download failed with HTTP {response.status_code}")
+    mime = (response.headers.get("content-type") or "").split(";")[0].strip().lower() or "audio/mpeg"
+    if not mime.startswith("audio/"):
+        mime = "audio/mpeg"
+    if not response.content:
+        raise RuntimeError("Audio download returned empty content")
+    return response.content, mime
+
+
+def _safe_audio_extension(mime: str) -> str:
+    normalized = (mime or "").split(";")[0].strip().lower()
+    ext = mimetypes.guess_extension(normalized or "") or ".mp3"
+    if ext in {".jpe", ".jpeg", ".jfif", ".txt", ".bin"}:
+        return ".mp3"
+    return ext
+
+
+def _stitch_audio_chunks(chunk_blobs: list[tuple[bytes, str]], requested_duration: int) -> tuple[bytes, str]:
+    if not chunk_blobs:
+        raise ValueError("No chunk audio blobs to stitch")
+    if len(chunk_blobs) == 1:
+        single_bytes, single_mime = chunk_blobs[0]
+        return single_bytes, single_mime or "audio/mpeg"
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        # Best-effort fallback when ffmpeg is unavailable.
+        merged = b"".join(blob for blob, _ in chunk_blobs)
+        return merged, (chunk_blobs[0][1] or "audio/mpeg")
+
+    with tempfile.TemporaryDirectory(prefix="mwv-audio-stitch-") as tmpdir:
+        normalized_paths: list[str] = []
+        for idx, (blob, mime) in enumerate(chunk_blobs):
+            source_ext = _safe_audio_extension(mime)
+            source_path = os.path.join(tmpdir, f"chunk_{idx:04d}{source_ext}")
+            wav_path = os.path.join(tmpdir, f"chunk_{idx:04d}.wav")
+            with open(source_path, "wb") as source_file:
+                source_file.write(blob)
+            convert_cmd = [
+                ffmpeg_path,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                source_path,
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                "-c:a",
+                "pcm_s16le",
+                wav_path,
+            ]
+            convert_proc = subprocess.run(convert_cmd, capture_output=True, text=True)
+            if convert_proc.returncode != 0:
+                detail = (convert_proc.stderr or "").strip()[:220]
+                raise RuntimeError(f"ffmpeg normalization failed for chunk {idx + 1}: {detail}")
+            normalized_paths.append(wav_path)
+
+        concat_manifest = os.path.join(tmpdir, "concat.txt")
+        with open(concat_manifest, "w", encoding="utf-8") as handle:
+            for wav_path in normalized_paths:
+                escaped = wav_path.replace("\\", "\\\\").replace("'", "'\\''")
+                handle.write(f"file '{escaped}'\n")
+
+        output_path = os.path.join(tmpdir, "stitched_output.mp3")
+        stitch_cmd = [
+            ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concat_manifest,
+            "-t",
+            str(max(1, int(requested_duration))),
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            output_path,
+        ]
+        stitch_proc = subprocess.run(stitch_cmd, capture_output=True, text=True)
+        if stitch_proc.returncode != 0:
+            detail = (stitch_proc.stderr or "").strip()[:240]
+            raise RuntimeError(f"ffmpeg stitching failed: {detail}")
+        with open(output_path, "rb") as out:
+            merged_bytes = out.read()
+        if not merged_bytes:
+            raise RuntimeError("Audio stitch output is empty")
+        return merged_bytes, "audio/mpeg"
+
+
+def _build_chunk_prompt(base_prompt: str, chunk_index: int, total_chunks: int, entropy_seed: str) -> str:
+    if total_chunks <= 1:
+        return base_prompt
+
+    if chunk_index == 0:
+        section_goal = "Start the composition with a clear motif and smooth intro."
+    elif chunk_index == total_chunks - 1:
+        section_goal = "Resolve the composition naturally and deliver a satisfying outro."
+    else:
+        section_goal = "Continue seamlessly from the previous segment with no hard restart."
+
+    continuity_instruction = (
+        f"Segment {chunk_index + 1} of {total_chunks}. "
+        "Keep key, tempo, instrumentation, groove, and melodic identity consistent across all segments. "
+        "Avoid silence gaps and abrupt cuts between segments. "
+        f"{section_goal} "
+        f"Segment seed: {entropy_seed}-{chunk_index + 1}."
+    )
+    return f"{base_prompt}. {continuity_instruction}"
+
+
 def _decode_data_url_blob(data_url: str) -> tuple[bytes, str]:
     if not isinstance(data_url, str) or not data_url.startswith("data:"):
         raise ValueError("Not a data URL")
@@ -818,7 +1014,7 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
         used_audio_urls = set()
     provider_failures: list[str] = []
 
-    if FREE_TIER_MODE:
+    if FREE_TIER_MODE and not MUSICGEN_API_URL:
         selected = select_audio_for_genres(song_payload.get("genres", []), used_audio_urls, song_payload)
         used_audio_urls.add(selected["url"])
         requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
@@ -830,61 +1026,129 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
             headers = {"Content-Type": "application/json"}
             if MUSICGEN_API_KEY:
                 headers["Authorization"] = f"Bearer {MUSICGEN_API_KEY}"
-            final_prompt = _build_musicgen_prompt(song_payload)
             requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=30)
+            final_prompt = _build_musicgen_prompt(song_payload)
+            entropy_seed = str(song_payload.get("entropy_seed") or _entropy_seed())
             is_hf_inference = (
                 "api-inference.huggingface.co/models/" in MUSICGEN_API_URL
                 or "router.huggingface.co/hf-inference/models/" in MUSICGEN_API_URL
             )
+            provider_label = "gemini_musicgen" if "gemini" in MUSICGEN_API_URL.lower() else "self_host_musicgen"
+            chunk_seconds = max(1, min(MUSICGEN_MAX_CHUNK_SECONDS, requested_duration))
+            total_chunks = max(1, math.ceil(requested_duration / chunk_seconds))
+
             if is_hf_inference:
                 headers["Accept"] = "audio/mpeg"
-                provider_payload = {
-                    "inputs": final_prompt,
-                    "parameters": {
-                        "duration": requested_duration,
-                    },
-                }
-            else:
-                provider_payload = {
-                    "title": song_payload.get("title", ""),
-                    "prompt": final_prompt,
-                    "genres": song_payload.get("genres", []),
-                    "lyrics": song_payload.get("lyrics", ""),
-                    "vocal_languages": song_payload.get("vocal_languages", []),
-                    "duration_seconds": requested_duration,
-                    "artist_inspiration": song_payload.get("artist_inspiration", ""),
-                }
-            response = await asyncio.to_thread(
-                lambda: requests.post(
-                    MUSICGEN_API_URL,
-                    json=provider_payload,
-                    headers=headers,
-                    timeout=180,
+
+            generated_chunks: list[dict] = []
+            produced_seconds = 0
+
+            for chunk_index in range(total_chunks):
+                remaining = requested_duration - produced_seconds
+                if remaining <= 0:
+                    break
+                current_chunk_duration = max(1, min(chunk_seconds, remaining))
+                chunk_prompt = _build_chunk_prompt(final_prompt, chunk_index, total_chunks, entropy_seed)
+
+                if is_hf_inference:
+                    provider_payload = {
+                        "inputs": chunk_prompt,
+                        "parameters": {
+                            "duration": current_chunk_duration,
+                            "do_sample": True,
+                            "temperature": 1.15,
+                            "top_p": 0.95,
+                        },
+                    }
+                else:
+                    provider_payload = {
+                        "title": song_payload.get("title", ""),
+                        "prompt": chunk_prompt,
+                        "genres": song_payload.get("genres", []),
+                        "lyrics": song_payload.get("lyrics", ""),
+                        "vocal_languages": song_payload.get("vocal_languages", []),
+                        "duration_seconds": current_chunk_duration,
+                        "duration": current_chunk_duration,
+                        "artist_inspiration": song_payload.get("artist_inspiration", ""),
+                        "chunk_index": chunk_index + 1,
+                        "total_chunks": total_chunks,
+                        "continuation_mode": "seamless",
+                        "entropy_seed": f"{entropy_seed}-{chunk_index + 1}",
+                    }
+
+                response = await asyncio.to_thread(
+                    lambda: requests.post(
+                        MUSICGEN_API_URL,
+                        json=provider_payload,
+                        headers=headers,
+                        timeout=MUSICGEN_REQUEST_TIMEOUT_SECONDS,
+                    )
                 )
-            )
-            if response.status_code >= 400:
-                detail = (response.text or "").strip().replace("\n", " ")[:180]
-                provider_failures.append(
-                    f"Self-host MusicGen HTTP {response.status_code}"
-                    + (f" ({detail})" if detail else "")
-                )
-                logger.warning("Music provider failed (%s): %s", response.status_code, response.text[:300])
-            else:
+                if response.status_code >= 400:
+                    detail = (response.text or "").strip().replace("\n", " ")[:200]
+                    raise RuntimeError(f"Music provider HTTP {response.status_code}" + (f" ({detail})" if detail else ""))
+
                 content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-                # HuggingFace / raw providers may return direct audio bytes.
+                chunk_entry = {
+                    "audio_ref": None,
+                    "audio_bytes": b"",
+                    "mime": "",
+                    "duration": current_chunk_duration,
+                }
                 if response.content and (content_type.startswith("audio/") or (is_hf_inference and not content_type.startswith("application/json"))):
                     mime = content_type if content_type.startswith("audio/") else "audio/mpeg"
-                    encoded = base64.b64encode(response.content).decode("ascii")
-                    data_url = f"data:{mime};base64,{encoded}"
-                    return data_url, requested_duration, False, "self_host_musicgen"
+                    chunk_entry["audio_bytes"] = response.content
+                    chunk_entry["mime"] = mime
+                else:
+                    data = response.json() if response.content else {}
+                    if not isinstance(data, dict):
+                        raise RuntimeError("Music provider JSON response is invalid")
+                    audio_ref = _extract_audio_data_url(data) or _extract_audio_url(data)
+                    if not audio_ref:
+                        raise RuntimeError("Music provider response missing audio output")
+                    chunk_entry["audio_ref"] = audio_ref
+                    chunk_entry["duration"] = int(data.get("duration_seconds") or current_chunk_duration)
 
-                data = response.json() if response.content else {}
-                audio_url = _extract_audio_url(data if isinstance(data, dict) else {})
-                if audio_url:
-                    duration = int(data.get("duration_seconds") or requested_duration)
-                    return audio_url, duration, False, "self_host_musicgen"
-                provider_failures.append("Self-host MusicGen response missing audio URL")
-                logger.warning("Music provider response missing audio url: %s", str(data)[:300])
+                generated_chunks.append(chunk_entry)
+                produced_seconds += current_chunk_duration
+
+            if not generated_chunks:
+                raise RuntimeError("Music provider produced no chunks")
+
+            # Preserve direct remote URL when only one chunk is needed.
+            if len(generated_chunks) == 1:
+                only = generated_chunks[0]
+                audio_ref = str(only.get("audio_ref") or "")
+                if audio_ref:
+                    return audio_ref, requested_duration, False, provider_label
+                audio_bytes = only.get("audio_bytes") or b""
+                if audio_bytes:
+                    mime = str(only.get("mime") or "audio/mpeg")
+                    return _build_data_url_blob(audio_bytes, mime), requested_duration, False, provider_label
+                raise RuntimeError("Single chunk missing audio payload")
+
+            # For multi-chunk tracks, resolve each chunk and stitch into one final asset.
+            chunk_blobs: list[tuple[bytes, str]] = []
+            for index, chunk in enumerate(generated_chunks):
+                raw_bytes = chunk.get("audio_bytes") or b""
+                mime = str(chunk.get("mime") or "").strip() or "audio/mpeg"
+                if raw_bytes:
+                    chunk_blobs.append((raw_bytes, mime))
+                    continue
+                audio_ref = str(chunk.get("audio_ref") or "").strip()
+                if not audio_ref:
+                    raise RuntimeError(f"Chunk {index + 1} missing audio reference")
+                resolved_bytes, resolved_mime = await asyncio.to_thread(_fetch_audio_blob_from_reference, audio_ref)
+                chunk_blobs.append((resolved_bytes, resolved_mime))
+
+            stitched_bytes, stitched_mime = await asyncio.to_thread(
+                _stitch_audio_chunks,
+                chunk_blobs,
+                requested_duration,
+            )
+            stitched_data_url = _build_data_url_blob(stitched_bytes, stitched_mime)
+            provider_name = f"{provider_label}_looped_{len(generated_chunks)}x"
+            return stitched_data_url, requested_duration, False, provider_name
         except Exception as exc:
             provider_failures.append(f"Self-host MusicGen exception: {type(exc).__name__}")
             logger.warning("Music provider exception: %s", exc)
@@ -3241,7 +3505,7 @@ async def api_health():
         ai_suggestion_status = "configured:openai_fallback_only"
     else:
         ai_suggestion_status = "missing_gemini_and_openai_keys"
-    if FREE_TIER_MODE:
+    if FREE_TIER_MODE and not MUSICGEN_API_URL:
         music_generation_mode = "free_curated_library"
     elif MUSICGEN_API_URL:
         music_generation_mode = "self_host_musicgen"
@@ -3256,6 +3520,7 @@ async def api_health():
         "ai_suggestions": ai_suggestion_status,
         "music_generation": music_generation_mode,
         "music_generation_model": MUSICGEN_API_URL if MUSICGEN_API_URL else None,
+        "music_generation_chunk_seconds": MUSICGEN_MAX_CHUNK_SECONDS if MUSICGEN_API_URL else None,
         "video_generation": "configured" if (REPLICATE_API_TOKEN and not FREE_TIER_MODE) else ("unavailable" if STRICT_REAL_MEDIA_OUTPUT else "fallback_sample_video"),
         "strict_real_media_output": STRICT_REAL_MEDIA_OUTPUT,
         "free_tier_mode": FREE_TIER_MODE,
