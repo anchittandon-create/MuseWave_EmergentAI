@@ -2007,6 +2007,27 @@ async def generate_ai_suggestion(
             if "insufficient_quota" in err_text or "invalid_api_key" in err_text or "rate_limit" in err_text:
                 break
 
+    # Provider-independent fallback to keep suggest endpoint operational.
+    fallback = _fallback_suggestion(
+        field=field,
+        context=context,
+        avoid_texts=seen_in_scope,
+        turn_hint=suggestion_turn + max(2, SUGGEST_MAX_ATTEMPTS),
+    )
+    if fallback:
+        finalized_fallback = await _finalize_unique_suggestion(
+            field=field,
+            suggestion=fallback,
+            context=context,
+            current_value=current_value,
+            seen_in_scope=seen_in_scope,
+            scope_key=scope_key,
+            user_id=user_id,
+            turn_hint=suggestion_turn + max(3, SUGGEST_MAX_ATTEMPTS + 1),
+        )
+        if finalized_fallback:
+            return finalized_fallback
+
     detail = f"AI suggestion failed for field '{field}'."
     if last_error:
         detail = f"{detail} Upstream: {last_error[:240]}"
