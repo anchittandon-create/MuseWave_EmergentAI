@@ -1,16 +1,17 @@
 import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import axios from "axios";
 import { Toaster } from "./components/ui/sonner";
 import { Sidebar } from "./components/Sidebar";
 import { HomePage } from "./pages/HomePage";
 import { CreateMusicPage } from "./pages/CreateMusicPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DocumentationPage } from "./pages/DocumentationPage";
+import { AccountSettingsPage } from "./pages/AccountSettingsPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
 const DEFAULT_BACKEND_URL = "https://muse-wave-backend.vercel.app";
-const DEFAULT_SUGGEST_BACKEND_URL = "https://muse-wave-backend.vercel.app";
 const INVALID_BACKEND_HOSTS = new Set([
   "github.com",
   "www.github.com",
@@ -42,7 +43,7 @@ const resolveBackendUrl = () => {
     if (host === "localhost" || host === "127.0.0.1") {
       return "http://localhost:8000";
     }
-    return DEFAULT_BACKEND_URL;
+    return window.location.origin;
   }
 
   return DEFAULT_BACKEND_URL;
@@ -57,7 +58,7 @@ const resolveSuggestBackendUrl = () => {
   if (normalizedConfigured) {
     return normalizedConfigured;
   }
-  return BACKEND_URL || DEFAULT_SUGGEST_BACKEND_URL;
+  return BACKEND_URL;
 };
 
 const SUGGEST_BACKEND_URL = resolveSuggestBackendUrl();
@@ -69,21 +70,58 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("musewave_user");
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-    setLoading(false);
+    const bootstrapSession = async () => {
+      const savedUser = localStorage.getItem("musewave_user");
+      if (savedUser) {
+        try {
+          const parsed = JSON.parse(savedUser);
+          if (parsed?.id) {
+            setUser(parsed);
+            localStorage.setItem("userId", parsed.id);
+            setLoading(false);
+            return;
+          }
+        } catch {
+          localStorage.removeItem("musewave_user");
+        }
+      }
+
+      const savedUserId = localStorage.getItem("userId");
+      if (savedUserId) {
+        try {
+          const res = await axios.get(`${API}/users/${savedUserId}`);
+          setUser(res.data);
+          localStorage.setItem("musewave_user", JSON.stringify(res.data));
+        } catch {
+          localStorage.removeItem("userId");
+          localStorage.removeItem("musewave_user");
+        }
+      }
+      setLoading(false);
+    };
+    bootstrapSession();
   }, []);
 
   const handleLogin = (userData) => {
     setUser(userData);
     localStorage.setItem("musewave_user", JSON.stringify(userData));
+    if (userData?.id) {
+      localStorage.setItem("userId", userData.id);
+    }
+  };
+
+  const handleUserUpdate = (userData) => {
+    setUser(userData);
+    localStorage.setItem("musewave_user", JSON.stringify(userData));
+    if (userData?.id) {
+      localStorage.setItem("userId", userData.id);
+    }
   };
 
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem("musewave_user");
+    localStorage.removeItem("userId");
   };
 
   if (loading) {
@@ -127,6 +165,16 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/create" element={<CreateMusicPage user={user} />} />
               <Route path="/dashboard" element={<DashboardPage user={user} />} />
+              <Route
+                path="/account"
+                element={
+                  <AccountSettingsPage
+                    user={user}
+                    onUserUpdated={handleUserUpdate}
+                    onAccountDeleted={handleLogout}
+                  />
+                }
+              />
               <Route path="/docs" element={<DocumentationPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

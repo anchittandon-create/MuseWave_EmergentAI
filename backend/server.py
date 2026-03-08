@@ -379,26 +379,43 @@ def get_all_artists() -> List[str]:
 # ==================== Models ====================
 
 class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
-    mobile: str
+    mobile: Optional[str] = None
+    phoneNumber: Optional[str] = None
+
 
 class UserLogin(BaseModel):
-    mobile: str
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    phoneNumber: Optional[str] = None
 
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    userId: Optional[str] = None
     name: str
     mobile: str
+    phoneNumber: Optional[str] = None
     role: str = "User"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserResponse(BaseModel):
     id: str
+    userId: str
     name: str
     mobile: str
+    phoneNumber: str
     role: str
     created_at: str
+
+
+class UserUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    phoneNumber: Optional[str] = None
 
 class SongCreate(BaseModel):
     title: Optional[str] = ""
@@ -444,6 +461,42 @@ class AISuggestRequest(BaseModel):
     user_id: Optional[str] = None
 
 # ==================== Uniqueness Utilities ====================
+
+
+def _normalize_phone_number(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    digits = re.sub(r"\D+", "", raw)
+    return digits or raw
+
+
+def _extract_phone_number(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, dict):
+        mobile = payload.get("mobile")
+        phone_number = payload.get("phoneNumber")
+    else:
+        mobile = getattr(payload, "mobile", None)
+        phone_number = getattr(payload, "phoneNumber", None)
+    return _normalize_phone_number(phone_number or mobile)
+
+
+def _response_from_user_doc(user: dict) -> UserResponse:
+    normalized = _normalized_user_profile(user)
+    user_id = str(normalized.get("id") or normalized.get("userId") or "").strip()
+    phone = _normalize_phone_number(normalized.get("mobile") or normalized.get("phoneNumber"))
+    created_at = str(normalized.get("created_at") or datetime.now(timezone.utc).isoformat())
+    return UserResponse(
+        id=user_id,
+        userId=user_id,
+        name=str(normalized.get("name") or "User"),
+        mobile=phone,
+        phoneNumber=phone,
+        role=str(normalized.get("role") or "User"),
+        created_at=created_at,
+    )
 
 def generate_uniqueness_seed() -> str:
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -1003,12 +1056,12 @@ async def _next_scope_turn(field: str, scope_key: str) -> int:
         logger.warning("Suggestion turn counter failed: %s", exc)
     return random.randint(1, 999999)
 
-async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str]:
+async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set] = None) -> tuple[str, int, bool, str, list[dict]]:
     """
     Generate/obtain track audio.
     1) If MUSICGEN_API_URL is configured, call self-hosted MusicGen for real generation.
     2) Fallback to curated demo library only when strict mode is disabled.
-    Returns: (audio_url, duration_seconds, is_demo, provider_name)
+    Returns: (audio_url, duration_seconds, is_demo, provider_name, segments)
     """
     if used_audio_urls is None:
         used_audio_urls = set()
@@ -1019,7 +1072,9 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
         used_audio_urls.add(selected["url"])
         requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
         unique_url = _make_unique_media_url(selected["url"])
-        return unique_url, requested_duration, True, "free_curated_library"
+        return unique_url, requested_duration, True, "free_curated_library", [
+            {"segment_index": 1, "storage_path": unique_url}
+        ]
 
     if MUSICGEN_API_URL:
         try:
@@ -1120,11 +1175,15 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
                 only = generated_chunks[0]
                 audio_ref = str(only.get("audio_ref") or "")
                 if audio_ref:
-                    return audio_ref, requested_duration, False, provider_label
+                    return audio_ref, requested_duration, False, provider_label, [
+                        {"segment_index": 1, "storage_path": audio_ref}
+                    ]
                 audio_bytes = only.get("audio_bytes") or b""
                 if audio_bytes:
                     mime = str(only.get("mime") or "audio/mpeg")
-                    return _build_data_url_blob(audio_bytes, mime), requested_duration, False, provider_label
+                    return _build_data_url_blob(audio_bytes, mime), requested_duration, False, provider_label, [
+                        {"segment_index": 1, "storage_path": f"inline://segment-1.{mime.split('/')[-1] or 'bin'}"}
+                    ]
                 raise RuntimeError("Single chunk missing audio payload")
 
             # For multi-chunk tracks, resolve each chunk and stitch into one final asset.
@@ -1148,7 +1207,15 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
             )
             stitched_data_url = _build_data_url_blob(stitched_bytes, stitched_mime)
             provider_name = f"{provider_label}_looped_{len(generated_chunks)}x"
-            return stitched_data_url, requested_duration, False, provider_name
+            segments = []
+            for index, chunk in enumerate(generated_chunks):
+                ref = str(chunk.get("audio_ref") or "").strip()
+                if not ref:
+                    mime = str(chunk.get("mime") or "audio/mpeg")
+                    ext = (mime.split("/")[-1] or "bin").split(";")[0]
+                    ref = f"inline://segment-{index + 1}.{ext}"
+                segments.append({"segment_index": index + 1, "storage_path": ref})
+            return stitched_data_url, requested_duration, False, provider_name, segments
         except Exception as exc:
             provider_failures.append(f"Self-host MusicGen exception: {type(exc).__name__}")
             logger.warning("Music provider exception: %s", exc)
@@ -1166,7 +1233,9 @@ async def generate_track_audio(song_payload: dict, used_audio_urls: Optional[set
     used_audio_urls.add(selected["url"])
     requested_duration = _normalize_duration_seconds(song_payload.get("duration_seconds"), default=selected.get("duration", 30))
     unique_url = _make_unique_media_url(selected["url"])
-    return unique_url, requested_duration, True, "curated_demo_library"
+    return unique_url, requested_duration, True, "curated_demo_library", [
+        {"segment_index": 1, "storage_path": unique_url}
+    ]
 
 def calculate_audio_accuracy(selected_audio: dict, song_data: SongCreate | dict) -> float:
     """Calculate accuracy percentage of selected audio against input parameters
@@ -2461,46 +2530,150 @@ Return only duration.""",
 
 @api_router.post("/auth/signup", response_model=UserResponse)
 async def signup(user_data: UserCreate):
-    existing = await db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
-    if not existing and legacy_db is not None:
-        existing = await legacy_db.users.find_one({"mobile": user_data.mobile}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Account with this mobile number already exists")
+    phone_number = _extract_phone_number(user_data)
+    if not phone_number:
+        raise HTTPException(status_code=422, detail="Phone number is required")
 
-    is_master = user_data.mobile == MASTER_ADMIN_MOBILE
-    name = MASTER_ADMIN_NAME if is_master else user_data.name.strip()
+    incoming_name = str(user_data.name or "").strip()
+    if not incoming_name:
+        raise HTTPException(status_code=422, detail="Name is required")
+
+    existing = await _get_user_by_phone(phone_number)
+    if existing:
+        # Per requested flow: existing phone during signup behaves as login.
+        if phone_number != MASTER_ADMIN_MOBILE and incoming_name and str(existing.get("name") or "").strip() != incoming_name:
+            await db.users.update_one({"$or": [{"id": existing.get("id")}, {"userId": existing.get("id")}]}, {"$set": {"name": incoming_name}})
+            existing["name"] = incoming_name
+        normalized = await _persist_normalized_user(existing)
+        return _response_from_user_doc(normalized)
+
+    is_master = phone_number == MASTER_ADMIN_MOBILE
+    name = MASTER_ADMIN_NAME if is_master else incoming_name
     role = MASTER_ADMIN_ROLE if is_master else "User"
 
-    user = User(name=name, mobile=user_data.mobile, role=role)
+    user = User(name=name, mobile=phone_number, phoneNumber=phone_number, role=role)
     doc = user.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
+    doc["id"] = doc.get("id") or str(uuid.uuid4())
+    doc["userId"] = doc["id"]
+    doc["mobile"] = phone_number
+    doc["phoneNumber"] = phone_number
+    doc["created_at"] = doc["created_at"].isoformat()
     await db.users.insert_one(doc)
 
-    return UserResponse(
-        id=user.id,
-        name=user.name,
-        mobile=user.mobile,
-        role=user.role,
-        created_at=doc['created_at']
-    )
+    return _response_from_user_doc(doc)
 
 @api_router.post("/auth/login", response_model=UserResponse)
 async def login(login_data: UserLogin):
-    user = await db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
-    if not user and legacy_db is not None:
-        user = await legacy_db.users.find_one({"mobile": login_data.mobile}, {"_id": 0})
+    phone_number = _extract_phone_number(login_data)
+    if not phone_number:
+        raise HTTPException(status_code=422, detail="Phone number is required")
+
+    incoming_name = str(login_data.name or "").strip()
+    user = await _get_user_by_phone(phone_number)
+
     if not user:
-        raise HTTPException(status_code=404, detail="No account found. Please sign up first.")
+        # Per requested flow: login auto-creates user when phone doesn't exist.
+        is_master = phone_number == MASTER_ADMIN_MOBILE
+        name = MASTER_ADMIN_NAME if is_master else (incoming_name or "User")
+        role = MASTER_ADMIN_ROLE if is_master else "User"
+        new_user = User(name=name, mobile=phone_number, phoneNumber=phone_number, role=role)
+        user_doc = new_user.model_dump()
+        user_doc["id"] = user_doc.get("id") or str(uuid.uuid4())
+        user_doc["userId"] = user_doc["id"]
+        user_doc["mobile"] = phone_number
+        user_doc["phoneNumber"] = phone_number
+        user_doc["created_at"] = user_doc["created_at"].isoformat()
+        await db.users.insert_one(user_doc)
+        return _response_from_user_doc(user_doc)
+
+    if phone_number != MASTER_ADMIN_MOBILE and incoming_name and str(user.get("name") or "").strip() != incoming_name:
+        await db.users.update_one({"$or": [{"id": user.get("id")}, {"userId": user.get("id")}]}, {"$set": {"name": incoming_name}})
+        if legacy_db is not None:
+            await legacy_db.users.update_one({"$or": [{"id": user.get("id")}, {"userId": user.get("id")}]}, {"$set": {"name": incoming_name}})
+        user["name"] = incoming_name
 
     user = await _persist_normalized_user(user)
+    return _response_from_user_doc(user)
 
-    return UserResponse(
-        id=user['id'],
-        name=user['name'],
-        mobile=user['mobile'],
-        role=user.get('role', 'User'),
-        created_at=user['created_at']
-    )
+
+@api_router.get("/users/{user_id}", response_model=UserResponse)
+async def get_user_profile(user_id: str):
+    user = await _get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    normalized = await _persist_normalized_user(user)
+    return _response_from_user_doc(normalized)
+
+
+@api_router.patch("/users/{user_id}", response_model=UserResponse)
+async def update_user_profile(user_id: str, payload: UserUpdate):
+    user = await _get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    normalized_user = _normalized_user_profile(user)
+    update_fields = {}
+
+    if payload.name is not None:
+        new_name = str(payload.name or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty")
+        if normalized_user.get("mobile") == MASTER_ADMIN_MOBILE:
+            update_fields["name"] = MASTER_ADMIN_NAME
+        else:
+            update_fields["name"] = new_name
+
+    if payload.mobile is not None or payload.phoneNumber is not None:
+        new_phone = _extract_phone_number(payload)
+        if not new_phone:
+            raise HTTPException(status_code=422, detail="Phone number cannot be empty")
+        existing_phone_user = await _get_user_by_phone(new_phone)
+        if existing_phone_user and str(existing_phone_user.get("id")) != str(user_id):
+            raise HTTPException(status_code=409, detail="Phone number is already in use")
+        update_fields["mobile"] = new_phone
+        update_fields["phoneNumber"] = new_phone
+
+    if update_fields:
+        query = {"$or": [{"id": user_id}, {"userId": user_id}]}
+        await db.users.update_one(query, {"$set": update_fields})
+        if legacy_db is not None:
+            await legacy_db.users.update_one(query, {"$set": update_fields})
+
+    refreshed = await _get_user_by_id(user_id)
+    if not refreshed:
+        raise HTTPException(status_code=404, detail="User not found after update")
+    normalized = await _persist_normalized_user(refreshed)
+    return _response_from_user_doc(normalized)
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user_account(user_id: str):
+    user = await _get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    songs_result = await db.songs.delete_many({"user_id": user_id})
+    albums_result = await db.albums.delete_many({"user_id": user_id})
+    segments_result = await db.segments.delete_many({"user_id": user_id})
+    await db.suggestion_history.delete_many({"user_id": user_id})
+    user_result = await db.users.delete_many({"$or": [{"id": user_id}, {"userId": user_id}]})
+
+    if legacy_db is not None:
+        await legacy_db.songs.delete_many({"user_id": user_id})
+        await legacy_db.albums.delete_many({"user_id": user_id})
+        await legacy_db.segments.delete_many({"user_id": user_id})
+        await legacy_db.suggestion_history.delete_many({"user_id": user_id})
+        await legacy_db.users.delete_many({"$or": [{"id": user_id}, {"userId": user_id}]})
+
+    return {
+        "ok": True,
+        "deleted": {
+            "users": user_result.deleted_count,
+            "songs": songs_result.deleted_count,
+            "albums": albums_result.deleted_count,
+            "segments": segments_result.deleted_count,
+        },
+    }
 
 # ==================== AI Suggest Routes ====================
 
@@ -2541,7 +2714,7 @@ async def create_song(song_data: SongCreate):
     generation_payload = song_data.model_dump()
     generation_payload["title"] = title
     generation_payload["entropy_seed"] = song_entropy_seed
-    audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
+    audio_url, actual_duration, is_demo, generation_provider, segments = await generate_track_audio(
         generation_payload,
         used_audio_urls=used_audio_urls,
     )
@@ -2598,18 +2771,24 @@ async def create_song(song_data: SongCreate):
 
     song_doc = {
         "id": song_id,
+        "trackId": song_id,
         "entropy": song_entropy_seed,
         "title": title,
+        "trackName": title,
         "music_prompt": song_data.music_prompt,
+        "prompt": song_data.music_prompt,
         "genres": song_data.genres,
         "duration_seconds": actual_duration,
+        "duration": actual_duration,
         "vocal_languages": song_data.vocal_languages,
         "lyrics": lyrics,
         "artist_inspiration": song_data.artist_inspiration or "",
         "generate_video": song_data.generate_video,
         "video_style": song_data.video_style or "",
         "audio_url": audio_url,
+        "audioUrl": audio_url,
         "video_url": video_url,
+        "videoUrl": video_url,
         "video_thumbnail": video_thumbnail,
         "video_status": video_status,
         "video_generated_at": datetime.now(timezone.utc).isoformat() if fallback_video_ready else None,
@@ -2617,7 +2796,10 @@ async def create_song(song_data: SongCreate):
         "accuracy_percentage": accuracy_percentage,
         "album_id": song_data.album_id,
         "user_id": song_data.user_id,
+        "userId": song_data.user_id,
+        "status": "completed",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
         "is_demo": is_demo,
         "generation_provider": generation_provider,
         # Quality enhancement parameters
@@ -2630,6 +2812,29 @@ async def create_song(song_data: SongCreate):
     }
     
     await db.songs.insert_one(song_doc)
+    if segments:
+        segment_docs = []
+        for seg in segments:
+            idx = int(seg.get("segment_index") or 1)
+            path = str(seg.get("storage_path") or "").strip() or f"inline://segment-{idx}.wav"
+            segment_docs.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "segmentId": str(uuid.uuid4()),
+                    "track_id": song_id,
+                    "trackId": song_id,
+                    "user_id": song_data.user_id,
+                    "userId": song_data.user_id,
+                    "segment_index": idx,
+                    "segmentIndex": idx,
+                    "storage_path": path,
+                    "storagePath": path,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        if segment_docs:
+            await db.segments.insert_many(segment_docs)
     
     # Remove MongoDB _id field for JSON serialization
     song_doc.pop('_id', None)
@@ -2684,9 +2889,12 @@ async def create_album(album_data: AlbumCreate):
 
     album_doc = {
         "id": album_id,
+        "albumId": album_id,
         "entropy": _entropy_seed(),
         "title": title,
+        "albumName": title,
         "music_prompt": album_prompt,
+        "albumVibePrompt": album_prompt,
         "genres": combined_genres,
         "vocal_languages": album_data.vocal_languages,
         "lyrics": album_data.lyrics or "",
@@ -2695,8 +2903,12 @@ async def create_album(album_data: AlbumCreate):
         "video_style": album_data.video_style or "",
         "cover_art_url": cover_art_url,
         "user_id": album_data.user_id,
+        "userId": album_data.user_id,
         "num_songs": num_tracks,
+        "trackCount": num_tracks,
+        "trackIds": [],
         "created_at": created_at,
+        "createdAt": created_at,
     }
     await db.albums.insert_one(album_doc)
     album_doc.pop("_id", None)
@@ -2750,7 +2962,7 @@ async def create_album(album_data: AlbumCreate):
                 logger.warning("Failed to generate lyrics for album track %s: %s", i + 1, e)
 
         track_entropy_seed = _entropy_seed()
-        audio_url, actual_duration, is_demo, generation_provider = await generate_track_audio(
+        audio_url, actual_duration, is_demo, generation_provider, segments = await generate_track_audio(
             {
                 "title": track_title,
                 "music_prompt": track_prompt,
@@ -2784,59 +2996,114 @@ async def create_album(album_data: AlbumCreate):
 
         song_doc = {
             "id": str(uuid.uuid4()),
+            "trackId": None,
             "entropy": track_entropy_seed,
             "track_number": i + 1,
             "title": track_title,
+            "trackName": track_title,
             "music_prompt": track_prompt,
+            "prompt": track_prompt,
             "genres": track_genres,
             "duration_seconds": actual_duration or desired_duration,
+            "duration": actual_duration or desired_duration,
             "vocal_languages": track_languages,
             "lyrics": track_lyrics,
             "artist_inspiration": track_artist_inspiration,
             "generate_video": album_data.generate_video,
             "video_style": track_video_style,
             "audio_url": audio_url,
+            "audioUrl": audio_url,
             "video_url": video_url,
+            "videoUrl": video_url,
             "video_thumbnail": video_thumbnail,
             "video_status": video_status,
             "video_generated_at": datetime.now(timezone.utc).isoformat() if fallback_video_ready else None,
             "cover_art_url": cover_art_url,
             "album_id": album_id,
             "user_id": album_data.user_id,
+            "userId": album_data.user_id,
+            "status": "completed",
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "createdAt": datetime.now(timezone.utc).isoformat(),
             "is_demo": is_demo,
             "generation_provider": generation_provider,
         }
+        song_doc["trackId"] = song_doc["id"]
 
         await db.songs.insert_one(song_doc)
+        album_doc["trackIds"].append(song_doc["id"])
+        if segments:
+            segment_docs = []
+            for seg in segments:
+                idx = int(seg.get("segment_index") or 1)
+                path = str(seg.get("storage_path") or "").strip() or f"inline://segment-{idx}.wav"
+                segment_docs.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "segmentId": str(uuid.uuid4()),
+                        "track_id": song_doc["id"],
+                        "trackId": song_doc["id"],
+                        "user_id": album_data.user_id,
+                        "userId": album_data.user_id,
+                        "segment_index": idx,
+                        "segmentIndex": idx,
+                        "storage_path": path,
+                        "storagePath": path,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "createdAt": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            if segment_docs:
+                await db.segments.insert_many(segment_docs)
         song_doc.pop("_id", None)
         songs.append(song_doc)
 
+    await db.albums.update_one({"id": album_id}, {"$set": {"trackIds": album_doc["trackIds"]}})
+
     return {
         "id": album_id,
+        "albumId": album_id,
         "title": title,
+        "albumName": title,
         "music_prompt": album_prompt,
+        "albumVibePrompt": album_prompt,
         "genres": combined_genres,
         "cover_art_url": cover_art_url,
         "user_id": album_data.user_id,
+        "userId": album_data.user_id,
         "created_at": created_at,
+        "createdAt": created_at,
+        "trackIds": [song["id"] for song in songs],
         "songs": songs,
     }
 
 # ==================== Data Retrieval ====================
 
 async def _get_user_by_id(user_id: str) -> Optional[dict]:
-    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    user = await db.users.find_one({"$or": [{"id": user_id}, {"userId": user_id}]}, {"_id": 0})
     if not user and legacy_db is not None:
-        user = await legacy_db.users.find_one({"id": user_id}, {"_id": 0})
+        user = await legacy_db.users.find_one({"$or": [{"id": user_id}, {"userId": user_id}]}, {"_id": 0})
+    return user
+
+
+async def _get_user_by_phone(phone_number: str) -> Optional[dict]:
+    phone = _normalize_phone_number(phone_number)
+    if not phone:
+        return None
+    query = {"$or": [{"mobile": phone}, {"phoneNumber": phone}]}
+    user = await db.users.find_one(query, {"_id": 0})
+    if not user and legacy_db is not None:
+        user = await legacy_db.users.find_one(query, {"_id": 0})
     return user
 
 
 def _normalized_user_profile(user: dict) -> dict:
-    mobile = str(user.get("mobile", "")).strip()
+    mobile = _normalize_phone_number(user.get("mobile") or user.get("phoneNumber"))
     is_master = mobile == MASTER_ADMIN_MOBILE
     name = str(user.get("name") or "").strip()
     role = str(user.get("role") or "").strip()
+    user_id = str(user.get("id") or user.get("userId") or "").strip()
+    created_at = str(user.get("created_at") or "").strip()
 
     if is_master:
         name = MASTER_ADMIN_NAME
@@ -2848,22 +3115,34 @@ def _normalized_user_profile(user: dict) -> dict:
             role = "User"
 
     normalized = dict(user)
+    normalized["id"] = user_id or str(uuid.uuid4())
+    normalized["userId"] = normalized["id"]
+    normalized["mobile"] = mobile
+    normalized["phoneNumber"] = mobile
     normalized["name"] = name
     normalized["role"] = role
+    normalized["created_at"] = created_at or datetime.now(timezone.utc).isoformat()
     return normalized
 
 
 async def _persist_normalized_user(user: dict) -> dict:
     normalized = _normalized_user_profile(user)
     update_fields = {}
+    if normalized.get("mobile") != user.get("mobile"):
+        update_fields["mobile"] = normalized["mobile"]
+    if normalized.get("phoneNumber") != user.get("phoneNumber"):
+        update_fields["phoneNumber"] = normalized["phoneNumber"]
+    if normalized.get("userId") != user.get("userId"):
+        update_fields["userId"] = normalized["userId"]
     if normalized.get("name") != user.get("name"):
         update_fields["name"] = normalized["name"]
     if normalized.get("role") != user.get("role"):
         update_fields["role"] = normalized["role"]
     if update_fields and normalized.get("id"):
-        await db.users.update_one({"id": normalized["id"]}, {"$set": update_fields}, upsert=True)
+        query = {"$or": [{"id": normalized["id"]}, {"userId": normalized["id"]}]}
+        await db.users.update_one(query, {"$set": update_fields}, upsert=True)
         if legacy_db is not None:
-            await legacy_db.users.update_one({"id": normalized["id"]}, {"$set": update_fields})
+            await legacy_db.users.update_one(query, {"$set": update_fields})
     return normalized
 
 
@@ -3561,6 +3840,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_db_indexes():
+    try:
+        await db.users.create_index("id", unique=True)
+        await db.users.create_index("userId", unique=True)
+        await db.users.create_index("mobile", unique=True, sparse=True)
+        await db.users.create_index("phoneNumber", unique=True, sparse=True)
+        await db.songs.create_index([("user_id", 1), ("created_at", -1)])
+        await db.albums.create_index([("user_id", 1), ("created_at", -1)])
+        await db.segments.create_index([("user_id", 1), ("track_id", 1), ("segment_index", 1)])
+        await db.suggestion_history.create_index([("user_id", 1), ("field", 1), ("created_at", -1)])
+    except Exception as exc:
+        logger.warning("Startup index creation warning: %s", exc)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

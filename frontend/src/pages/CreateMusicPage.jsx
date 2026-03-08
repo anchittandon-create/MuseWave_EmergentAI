@@ -182,16 +182,36 @@ export default function CreateMusicPage({ user }) {
         };
       }
 
-      const response = await axios.post(
-        `${SUGGEST_API}/suggest`,
-        {
-          field,
-          current_value: currentValue,
-          context,
-          user_id: user?.id || null,
-        },
-        { timeout: 15000 }
-      );
+      const requestBody = {
+        field,
+        current_value: currentValue,
+        context,
+        user_id: user?.id || null,
+      };
+
+      const endpoints = [`${SUGGEST_API}/suggest`];
+      const fallbackEndpoint = `${API}/suggest`;
+      if (fallbackEndpoint !== endpoints[0]) {
+        endpoints.push(fallbackEndpoint);
+      }
+
+      let response = null;
+      let lastNetworkError = null;
+      for (const endpoint of endpoints) {
+        try {
+          response = await axios.post(endpoint, requestBody, { timeout: 30000 });
+          break;
+        } catch (err) {
+          if (err.response) {
+            throw err;
+          }
+          lastNetworkError = err;
+        }
+      }
+
+      if (!response) {
+        throw lastNetworkError || new Error("Suggest request failed");
+      }
 
       if (mode === "album" && songIndex !== null) {
         applySuggestionToSong(songIndex, field, response.data.suggestion);
@@ -200,8 +220,12 @@ export default function CreateMusicPage({ user }) {
       }
       toast.success("AI suggestion applied!", { duration: 2000 });
     } catch (error) {
+      if (error.code === "ECONNABORTED") {
+        toast.error("Suggest request timed out. Please retry.");
+        return;
+      }
       if (!error.response) {
-        toast.error(`Cannot reach suggest backend at ${SUGGEST_API}. Set REACT_APP_SUGGEST_BACKEND_URL correctly.`);
+        toast.error(`Cannot reach suggest backend at ${SUGGEST_API}.`);
       } else {
         toast.error(error.response?.data?.detail || "Failed to get suggestion");
       }

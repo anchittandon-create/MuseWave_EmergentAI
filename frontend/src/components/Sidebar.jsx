@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu, FileText } from "lucide-react";
+import { Home, Music, LayoutDashboard, LogOut, Sparkles, Menu, FileText, UserCog } from "lucide-react";
 import { Button } from "./ui/button";
 
 export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
@@ -7,6 +7,7 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
     { to: "/", icon: Home, label: "Home" },
     { to: "/create", icon: Music, label: "Create Music" },
     { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+    { to: "/account", icon: UserCog, label: "Account" },
     { to: "/docs", icon: FileText, label: "System Docs" },
   ];
 
@@ -82,7 +83,7 @@ export const Sidebar = ({ user, onLogout, isCollapsed, onCollapsedChange }) => {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium truncate">{user.name}</p>
               <p className="text-[11px] text-primary/90 truncate">{user.role || "User"}</p>
-              <p className="text-xs text-muted-foreground truncate font-mono">{user.mobile}</p>
+              <p className="text-xs text-muted-foreground truncate font-mono">{user.mobile || user.phoneNumber}</p>
             </div>
           )}
         </div>

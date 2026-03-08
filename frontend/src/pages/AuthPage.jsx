@@ -15,7 +15,7 @@ export default function AuthPage({ onLogin }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (mode === "signup" && !formData.name.trim()) {
+    if (!formData.name.trim()) {
       toast.error("Please enter your name");
       return;
     }
@@ -30,12 +30,15 @@ export default function AuthPage({ onLogin }) {
         const response = await axios.post(`${API}/auth/signup`, {
           name: formData.name,
           mobile: formData.mobile,
+          phoneNumber: formData.mobile,
         });
-        toast.success("Account created successfully!");
+        toast.success("Signed in successfully!");
         onLogin(response.data);
       } else {
         const response = await axios.post(`${API}/auth/login`, {
+          name: formData.name,
           mobile: formData.mobile,
+          phoneNumber: formData.mobile,
         });
         toast.success(`Welcome back, ${response.data.name}!`);
         onLogin(response.data);
@@ -91,22 +94,20 @@ export default function AuthPage({ onLogin }) {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            {mode === "signup" && (
-              <div className="space-y-2 animate-fade-in">
-                <Label htmlFor="name" className="text-xs uppercase tracking-widest text-muted-foreground">
-                  Name
-                </Label>
-                <Input
-                  id="name"
-                  type="text"
-                  placeholder="Enter your name"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="h-14 text-lg bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
-                  data-testid="name-input"
-                />
-              </div>
-            )}
+            <div className="space-y-2 animate-fade-in">
+              <Label htmlFor="name" className="text-xs uppercase tracking-widest text-muted-foreground">
+                Name
+              </Label>
+              <Input
+                id="name"
+                type="text"
+                placeholder="Enter your name"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="h-14 text-lg bg-transparent border-0 border-b-2 border-white/10 rounded-none px-0 focus-visible:ring-0 focus-visible:border-primary"
+                data-testid="name-input"
+              />
+            </div>
 
             <div className="space-y-2">
               <Label htmlFor="mobile" className="text-xs uppercase tracking-widest text-muted-foreground">
