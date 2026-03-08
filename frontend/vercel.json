@@ -1,14 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/api",
-      "destination": "https://muse-wave-backend.vercel.app/api"
-    },
-    {
-      "source": "/api/:path*",
-      "destination": "https://muse-wave-backend.vercel.app/api/:path*"
-    },
-    {
       "source": "/((?!api).*)",
       "destination": "/index.html"
     }

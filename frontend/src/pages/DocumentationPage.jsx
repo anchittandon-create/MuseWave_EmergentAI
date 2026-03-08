@@ -105,7 +105,7 @@ const DOC_SECTIONS = [
       "AI Suggestion: `OPENAI_API_KEY`, optional `OPENAI_MODEL`, optional latency controls `SUGGEST_MAX_ATTEMPTS`, `SUGGEST_OPENAI_TIMEOUT_SECONDS`.",
       "Music Generation: `MUSICGEN_API_URL`, `MUSICGEN_API_KEY`, or Replicate keys/settings (`REPLICATE_API_TOKEN`, model/version/output vars).",
       "Video Generation: `REPLICATE_API_TOKEN` (shared with music pipeline).",
-      "Frontend routing: `REACT_APP_BACKEND_URL`, optional `REACT_APP_SUGGEST_BACKEND_URL`.",
+      "Frontend routing: all backend calls are same-origin internal API routes under `/api/*`.",
     ],
   },
   {

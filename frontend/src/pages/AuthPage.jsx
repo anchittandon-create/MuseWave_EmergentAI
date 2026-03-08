@@ -45,7 +45,7 @@ export default function AuthPage({ onLogin }) {
       }
     } catch (error) {
       if (!error.response) {
-        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+        toast.error("Cannot reach API route. Please retry.");
       } else {
         toast.error(error.response?.data?.detail || "Something went wrong");
       }

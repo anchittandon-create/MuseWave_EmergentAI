@@ -11,58 +11,8 @@ import { AccountSettingsPage } from "./pages/AccountSettingsPage";
 import { AuthPage } from "./pages/AuthPage";
 import "./App.css";
 
-const DEFAULT_BACKEND_URL = "https://muse-wave-backend.vercel.app";
-const INVALID_BACKEND_HOSTS = new Set([
-  "github.com",
-  "www.github.com",
-  "raw.githubusercontent.com",
-]);
-
-const normalizeBackendUrl = (rawUrl) => {
-  if (!rawUrl) return null;
-  try {
-    const parsed = new URL(rawUrl);
-    if (INVALID_BACKEND_HOSTS.has(parsed.hostname)) return null;
-    return parsed.origin;
-  } catch {
-    const normalized = rawUrl.replace(/\/+$/, "").replace(/\/dashboard$/i, "");
-    if (/github\.com/i.test(normalized)) return null;
-    return normalized;
-  }
-};
-
-const resolveBackendUrl = () => {
-  const configured = process.env.REACT_APP_BACKEND_URL;
-  const normalizedConfigured = normalizeBackendUrl(configured);
-  if (normalizedConfigured) {
-    return normalizedConfigured;
-  }
-
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    if (host === "localhost" || host === "127.0.0.1") {
-      return "http://localhost:8000";
-    }
-    return window.location.origin;
-  }
-
-  return DEFAULT_BACKEND_URL;
-};
-
-const BACKEND_URL = resolveBackendUrl();
-export const API = `${BACKEND_URL}/api`;
-
-const resolveSuggestBackendUrl = () => {
-  const configured = process.env.REACT_APP_SUGGEST_BACKEND_URL;
-  const normalizedConfigured = normalizeBackendUrl(configured);
-  if (normalizedConfigured) {
-    return normalizedConfigured;
-  }
-  return BACKEND_URL;
-};
-
-const SUGGEST_BACKEND_URL = resolveSuggestBackendUrl();
-export const SUGGEST_API = `${SUGGEST_BACKEND_URL}/api`;
+export const API = "/api";
+export const SUGGEST_API = "/api";
 
 function App() {
   const [user, setUser] = useState(null);

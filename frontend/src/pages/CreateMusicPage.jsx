@@ -183,52 +183,49 @@ export default function CreateMusicPage({ user }) {
       }
 
       const requestBody = {
+        type:
+          field === "genres"
+            ? "genre"
+            : field === "music_prompt"
+              ? "description"
+              : "title",
         field,
         current_value: currentValue,
         context,
         user_id: user?.id || null,
       };
 
-      const endpoints = [`${SUGGEST_API}/suggest`];
-      const fallbackEndpoint = `${API}/suggest`;
-      if (fallbackEndpoint !== endpoints[0]) {
-        endpoints.push(fallbackEndpoint);
-      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const suggestResponse = await fetch(`${SUGGEST_API}/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-      let response = null;
-      let lastNetworkError = null;
-      for (const endpoint of endpoints) {
-        try {
-          response = await axios.post(endpoint, requestBody, { timeout: 30000 });
-          break;
-        } catch (err) {
-          if (err.response) {
-            throw err;
-          }
-          lastNetworkError = err;
-        }
+      const suggestData = await suggestResponse.json();
+      if (!suggestResponse.ok) {
+        throw new Error(suggestData?.error || "Failed to get suggestion");
       }
-
-      if (!response) {
-        throw lastNetworkError || new Error("Suggest request failed");
+      const resolvedSuggestion = suggestData?.suggestion || suggestData?.suggestions?.[0];
+      if (!resolvedSuggestion) {
+        throw new Error("No suggestion returned");
       }
 
       if (mode === "album" && songIndex !== null) {
-        applySuggestionToSong(songIndex, field, response.data.suggestion);
+        applySuggestionToSong(songIndex, field, resolvedSuggestion);
       } else {
-        applySuggestion(field, response.data.suggestion);
+        applySuggestion(field, resolvedSuggestion);
       }
       toast.success("AI suggestion applied!", { duration: 2000 });
     } catch (error) {
-      if (error.code === "ECONNABORTED") {
+      if (error?.name === "AbortError") {
         toast.error("Suggest request timed out. Please retry.");
         return;
       }
-      if (!error.response) {
-        toast.error(`Cannot reach suggest backend at ${SUGGEST_API}.`);
-      } else {
-        toast.error(error.response?.data?.detail || "Failed to get suggestion");
-      }
+      toast.error(error?.message || "Failed to get suggestion");
     } finally {
       setSuggestingFields((prev) => {
         const next = new Set(prev);
@@ -490,51 +487,89 @@ export default function CreateMusicPage({ user }) {
     setResult(null);
 
     try {
-      const endpoint = mode === "single" ? "/songs/create" : "/albums/create";
-      const albumGenres = Array.from(
-        new Set(
-          formData.albumSongs.flatMap((song) => song.selectedGenres || []).concat(formData.selectedGenres || [])
-        )
-      );
-      const payload = {
-        title: formData.title,
-        music_prompt: mode === "single"
-          ? formData.musicPrompt
-          : (formData.musicPrompt || formData.albumSongs[0]?.musicPrompt || ""),
-        genres: mode === "single" ? formData.selectedGenres : albumGenres,
-        vocal_languages: formData.vocalLanguages,
-        lyrics: formData.lyrics,
-        artist_inspiration: formData.artistInspiration,
-        generate_video: formData.generateVideo,
-        video_style: formData.videoStyle,
+      const toTrackCardModel = (generated, fallback) => ({
+        id: generated?.id || generated?.trackId || generated?.project_id || crypto.randomUUID(),
         user_id: user.id,
-        ...(mode === "single" 
-          ? { duration_seconds: formData.durationSeconds, mode: "single" }
-          : {
-              num_songs: formData.albumSongs.length,
-              album_songs: formData.albumSongs.map((song) => ({
-                title: song.title || "",
-                music_prompt: song.musicPrompt || "",
-                genres: song.selectedGenres || [],
-                duration_seconds: song.durationSeconds || 25,
-                vocal_languages: song.vocalLanguages || [],
-                lyrics: song.lyrics || "",
-                artist_inspiration: song.artistInspiration || "",
-                video_style: song.videoStyle || "",
-              })),
-            }
-        ),
-      };
+        title: fallback.trackName,
+        duration_seconds: fallback.duration,
+        lyrics: fallback.lyrics || "",
+        cover_art_url:
+          generated?.coverArtUrl ||
+          "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&h=400&fit=crop",
+        audio_url: generated?.trackUrl || generated?.audio_url || "",
+        video_url: generated?.videoUrl || generated?.video_url || null,
+      });
 
-      const response = await axios.post(`${API}${endpoint}`, payload);
-      setResult({ type: mode === "single" ? "song" : "album", data: response.data });
-      toast.success(mode === "single" ? "Track created!" : `Album with ${response.data.songs?.length} tracks created!`);
-    } catch (error) {
-      if (!error.response) {
-        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+      if (mode === "single") {
+        const payload = {
+          trackName: formData.title || "Untitled Track",
+          description: formData.musicPrompt,
+          genre: formData.selectedGenres.join(", "),
+          duration: formData.durationSeconds,
+          artistStyle: formData.artistInspiration || "",
+          lyrics: formData.lyrics || "",
+          generateVideo: formData.generateVideo,
+          videoStyle: formData.videoStyle || "",
+          vocalLanguages: formData.vocalLanguages,
+          userId: user.id,
+        };
+
+        const response = await fetch(`${API}/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || "Generation failed");
+        }
+
+        const track = toTrackCardModel(data, payload);
+        setResult({ type: "song", data: track });
+        toast.success(data?.message || "Track generated successfully");
       } else {
-        toast.error(error.response?.data?.detail || "Creation failed");
+        const albumTitle = formData.title || "Untitled Album";
+        const generatedSongs = await Promise.all(
+          formData.albumSongs.map(async (song, index) => {
+            const payload = {
+              trackName: song.title || `${albumTitle} - Track ${index + 1}`,
+              description: song.musicPrompt,
+              genre: (song.selectedGenres || []).join(", "),
+              duration: song.durationSeconds || 25,
+              artistStyle: song.artistInspiration || "",
+              lyrics: song.lyrics || "",
+              generateVideo: formData.generateVideo,
+              videoStyle: song.videoStyle || formData.videoStyle || "",
+              vocalLanguages: song.vocalLanguages || [],
+              userId: user.id,
+            };
+            const response = await fetch(`${API}/generate`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data?.error || `Failed to generate track ${index + 1}`);
+            }
+            return toTrackCardModel(data, payload);
+          })
+        );
+
+        setResult({
+          type: "album",
+          data: {
+            id: crypto.randomUUID(),
+            title: albumTitle,
+            cover_art_url:
+              "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&h=400&fit=crop",
+            songs: generatedSongs,
+          },
+        });
+        toast.success(`Album with ${generatedSongs.length} tracks generated successfully`);
       }
+    } catch (error) {
+      toast.error(error?.message || "Creation failed");
     } finally {
       setLoading(false);
     }
@@ -560,7 +595,7 @@ export default function CreateMusicPage({ user }) {
       toast.success(response.data?.message || "Video generation started");
     } catch (error) {
       if (!error.response) {
-        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+        toast.error("Cannot reach API route. Please retry.");
       } else {
         toast.error(error.response?.data?.detail || "Failed to generate videos");
       }
@@ -1452,7 +1487,7 @@ const TrackCard = ({ track, index, isPlaying, onPlay }) => {
       }
     } catch (error) {
       if (!error.response) {
-        toast.error(`Cannot reach backend at ${API}. Set REACT_APP_BACKEND_URL correctly.`);
+        toast.error("Cannot reach API route. Please retry.");
       } else {
         toast.error(error.response?.data?.detail || "Failed to generate video");
       }
